@@ -264,9 +264,8 @@ See `docs/SPEC.md` for grammar details and `docs/CIP_STEREO_THEORY.md` for stere
 If you use SCRIPT in academic work, please cite:
 
 ```
-Sharma, S. (2026). SCRIPT: Structural Chemical Representation in Plain Text.
-A Deterministic Molecular Notation System with CIP-Based Stereochemistry.
-https://github.com/script-notation/script
+Sharma, S. (2026). SCRIPT: A Deterministic Molecular Notation System with CIP-Based Stereochemistry.
+https://github.com/sangeet01/script
 ```
 
 ---
@@ -277,7 +276,7 @@ https://github.com/script-notation/script
 
 Free for academic research, personal projects, and non-commercial open-source development.
 
-Commercial use (sale of software/services whose value derives substantially from SCRIPT) requires separate licensing agreement.
+Commercial use requires separate licensing agreement.
 
 See `LICENSE` for full terms.
 
