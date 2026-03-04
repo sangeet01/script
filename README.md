@@ -291,9 +291,6 @@ For questions, collaborations, or commercial licensing:
 - GitHub Issues: [script-notation/script/issues](https://github.com/sangeet01/script/issues)
 - Documentation: See `docs/` directory
 
----
-
-*"A linear script to unfold molecular complexity."*
 
 ---
 
