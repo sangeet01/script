@@ -1,0 +1,190 @@
+// SCRIPT.lark - Complete Grammar for SCRIPT 1.0
+// Structural Chemical Representation in Plain Text
+// February 2026
+
+
+// === Lark Directives ===
+%import common.WS
+%import common.INT
+%ignore WS
+
+
+// === Start Rule ===
+start: script
+
+// === Top Level: Multi-component Structure ===
+// Components separated by "." (salts, mixtures)
+script: component ("." component)*
+
+component: peptide_chain
+         | polymer
+         | molecular_chain
+
+// =============================================================
+// FIX 1+3: molecular_chain MUST start with an atom_expr
+// Then optionally: bond? (atom_expr | local_ring | branch)
+// This prevents invalid strings like "==#" or "6(C)"
+// FIX 3: atom_expr is now a proper non-terminal
+// =============================================================
+molecular_chain: atom_expr (bond? (atom_expr | local_ring | branch))*
+
+atom_expr: ORGANIC_ATOM
+         | bracket_atom
+         | WILDCARD
+
+// === Organic Atoms (UPPERCASE only - Kekule form) ===
+// FIX 6: Added WILDCARD "*" for polymer connection points
+// FIX 7: Added group shortcuts (Ph for phenyl, etc.)
+ORGANIC_ATOM: "Br" | "Cl" | "At" | "Ts"
+            | "Ph"
+            | "B" | "C" | "N" | "O" | "P" | "S" | "F" | "I"
+
+WILDCARD: "*"
+
+// =============================================================
+// FIX 2: bracket_atom now includes optional radical marker
+// Supports [O.] (monovalent radical) and [C..] (divalent radical)
+// =============================================================
+bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? "]"
+
+// Full Periodic Table (uppercase only, all 118 elements)
+element: "He" | "Li" | "Be" | "Ne"
+       | "Na" | "Mg" | "Al" | "Si" | "Cl" | "Ar"
+       | "Ca" | "Sc" | "Ti" | "Cr" | "Mn" | "Fe" | "Co" | "Ni" | "Cu" | "Zn"
+       | "Ga" | "Ge" | "As" | "Se" | "Br" | "Kr" | "Rb" | "Sr" | "Zr"
+       | "Nb" | "Mo" | "Tc" | "Ru" | "Rh" | "Pd" | "Ag" | "Cd" | "In" | "Sn"
+       | "Sb" | "Te" | "Xe" | "Cs" | "Ba" | "La" | "Ce" | "Pr" | "Nd"
+       | "Pm" | "Sm" | "Eu" | "Gd" | "Tb" | "Dy" | "Ho" | "Er" | "Tm" | "Yb"
+       | "Lu" | "Hf" | "Ta" | "Re" | "Os" | "Ir" | "Pt" | "Au" | "Hg"
+       | "Tl" | "Pb" | "Bi" | "Po" | "At" | "Rn" | "Fr" | "Ra" | "Ac" | "Th"
+       | "Pa" | "Np" | "Pu" | "Am" | "Cm" | "Bk" | "Cf" | "Es" | "Fm"
+       | "Md" | "No" | "Lr" | "Rf" | "Db" | "Sg" | "Bh" | "Hs" | "Mt" | "Ds"
+       | "Rg" | "Cn" | "Nh" | "Fl" | "Mc" | "Lv" | "Ts" | "Og"
+       | "H" | "B" | "C" | "N" | "O" | "F" | "P" | "S" | "I" | "K" | "V" | "W" | "Y" | "U"
+
+// Isotope (mass number before element)
+isotope: INT
+
+// Complete Stereochemistry Support
+chiral: "@@"          // Tetrahedral S (must come before @ for longest match)
+      | "@SP"         // Square planar
+      | "@OH"         // Octahedral
+      | "@AX"         // Axial / atropisomer
+      | "@TB"         // Trigonal bipyramidal
+      | "@PY"         // Pyramidal
+      | "@"           // Tetrahedral R
+
+// Hydrogen count
+hcount: "H" INT?
+
+// Charges
+charge: "++" | "--"
+      | "+" INT?
+      | "-" INT?
+
+// FIX 1: Radical marker inside bracket atoms
+// [O.] = monovalent radical, [C..] = divalent diradical
+radical: ".." | "."
+
+// Ring class (atom mapping number)
+ring_class: ":" INT
+
+// === Chemical Bonds ===
+bond: DATIVE             // Dative bond (organometallics)
+    | REV_DATIVE         // Reverse dative
+    | SINGLE_BOND        // Single bond
+    | DOUBLE_BOND        // Double bond
+    | TRIPLE_BOND        // Triple bond
+    | AROMATIC_BOND      // Aromatic
+    | UP_BOND            // Up stereo bond
+    | DOWN_BOND          // Down stereo bond
+
+DATIVE: "->"
+REV_DATIVE: "<-"
+SINGLE_BOND: "-"
+DOUBLE_BOND: "="
+TRIPLE_BOND: "#"
+AROMATIC_BOND: ":"
+UP_BOND: "/"
+DOWN_BOND: "\\"
+
+
+// =============================================================
+// FIX 5: Branches can hold molecular_chain OR peptide_chain
+// This enables glycosylation notation like (N{Gly})
+// Bond-first branches like (=O) are standard: bond specifies
+// how the branch connects to the parent chain
+// =============================================================
+branch: "(" branch_content ")"
+
+branch_content: peptide_chain
+              | bond? molecular_chain
+
+// === Local Ring Closures (SCRIPT key feature) ===
+// FIX 10: named_ring only appears in molecular context via local_ring
+local_ring: DIGIT              // 1-9 atoms back
+          | "%" DIGIT DIGIT    // 10-99 atoms back
+          | named_ring         // [A], [B], etc. for polycycles
+
+named_ring: "[" LETTER "]"
+
+// =============================================================
+// FIX 4+10: Peptide Chains {A.G.S.C[A]K}
+// Bridges can appear inline between monomers (C[A]K)
+// or after the full sequence: {A.G.S[A][B]}
+// =============================================================
+peptide_chain: "{" peptide_body "}" local_ring?
+
+// Peptide body: dot-separated monomer_elements, optional trailing bridges
+// Bridges can also act as separators: C[A]K means Cys-bridge-Lys
+peptide_body: monomer_element ("." monomer_element)* bridge*
+
+// A monomer with optional trailing bridges and optional next monomer
+// This allows C[A]K (bridge between monomers without dot)
+monomer_element: monomer (bridge monomer)* bridge*
+
+// 20 Standard Amino Acids (single-letter AND 3-letter codes)
+AMINO_ACID: "Ala" | "Arg" | "Asn" | "Asp" | "Cys" | "Glu" | "Gln" | "Gly"
+          | "His" | "Ile" | "Leu" | "Lys" | "Met" | "Phe" | "Pro" | "Ser"
+          | "Thr" | "Trp" | "Tyr" | "Val"
+          | "A" | "R" | "N" | "D" | "C" | "E" | "Q" | "G" | "H" | "I"
+          | "L" | "K" | "M" | "F" | "P" | "S" | "T" | "W" | "Y" | "V"
+
+// FIX 4: monomer is only amino acid or PTM, no bridge_ref
+monomer: AMINO_ACID
+       | PTM_CODE
+
+// Post-Translational Modifications (50+ common PTMs)
+PTM_CODE: "nitY" | "acK" | "ubK" | "suK" | "oxM" | "Hyp" | "Hyl"
+        | "Orn" | "Cit" | "Sec" | "Pyl" | "Gla" | "Dpr" | "Dab" | "Sar"
+        | "pS" | "pT" | "pY" | "mK" | "mR"
+
+// FIX 10: bridge only in peptide context (no collision with named_ring)
+bridge: "[" LETTER "]"
+
+// =============================================================
+// FIX 9: Polymers and Macromolecules (BigSMILES integration)
+// polymer_content can be molecular_chain or stochastic/branched
+// =============================================================
+polymer: "{" polymer_content "}" repeat_spec?
+
+polymer_content: stochastic_unit
+               | branched_unit
+               | molecular_chain
+
+stochastic_unit: "[" molecular_chain "]" molecular_chain
+
+branched_unit: "[" ">" "]" "<" "[" molecular_chain "]" molecular_chain
+
+// FIX 8: repeat_spec with stochastic_ratio
+// stochastic_ratio uses underscore-separated format to avoid "." conflict
+// e.g. {block}0_7 means ratio 0.7
+repeat_spec: "n"
+           | RATIO
+           | INT
+
+RATIO: INT "_" INT
+
+// === Terminals ===
+DIGIT: "0".."9"
+LETTER: "A".."Z"
