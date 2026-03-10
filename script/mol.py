@@ -8,12 +8,13 @@ from typing import List, Dict, Tuple, Optional, Any
 class CoreAtom:
     def __init__(self, atomic_num: int, formal_charge: int = 0, 
                  isotope: int = 0, radical_electrons: int = 0,
-                 symbol: str = ""):
+                 symbol: str = "", is_aromatic: bool = False):
         self.atomic_num = atomic_num
         self.formal_charge = formal_charge
         self.isotope = isotope
         self.radical_electrons = radical_electrons
         self.symbol = symbol
+        self.is_aromatic = is_aromatic
         self.rank = -1  # To be filled by ranking engine
         self.coords: Optional[Tuple[float, float, float]] = None
         self.implicit_hs: Optional[int] = None

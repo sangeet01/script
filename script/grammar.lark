@@ -32,17 +32,16 @@ atom_expr: ORGANIC_ATOM
          | bracket_atom
          | WILDCARD
 
-// === Organic Atoms (UPPERCASE only - Kekule form) ===
-// FIX 6: Added WILDCARD "*" for polymer connection points
-// FIX 7: Added group shortcuts (Ph for phenyl, etc.)
+// === Organic Atoms (UPPERCASE ONLY - Kekule / Anubandha System) ===
+// Lowercase atoms are REMOVED. Aromaticity is handled topologically via ring closures.
 ORGANIC_ATOM: "Br" | "Cl" | "At" | "Ts"
             | "Ph"
             | "B" | "C" | "N" | "O" | "P" | "S" | "F" | "I"
-
+            
 WILDCARD: "*"
 
 // =============================================================
-// FIX 2: bracket_atom now includes optional radical marker
+// bracket_atom now includes optional radical marker
 // Supports [O.] (monovalent radical) and [C..] (divalent radical)
 // =============================================================
 bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? "]"
@@ -65,7 +64,7 @@ element: "He" | "Li" | "Be" | "Ne"
 // Isotope (mass number before element)
 isotope: INT
 
-// Complete Stereochemistry Support
+// Complete Stereochemistry Support (Anchored to DFS Path)
 chiral: "@@"          // Tetrahedral S (must come before @ for longest match)
       | "@SP"         // Square planar
       | "@OH"         // Octahedral
@@ -82,20 +81,21 @@ charge: "++" | "--"
       | "+" INT?
       | "-" INT?
 
-// FIX 1: Radical marker inside bracket atoms
+// Radical marker inside bracket atoms
 // [O.] = monovalent radical, [C..] = divalent diradical
 radical: ".." | "."
 
 // Ring class (atom mapping number)
 ring_class: ":" INT
 
-// === Chemical Bonds ===
+// === Chemical Bonds (State Markers) ===
 bond: DATIVE             // Dative bond (organometallics)
     | REV_DATIVE         // Reverse dative
     | SINGLE_BOND        // Single bond
     | DOUBLE_BOND        // Double bond
     | TRIPLE_BOND        // Triple bond
-    | AROMATIC_BOND      // Aromatic
+    | AROMATIC_BOND      // Aromatic / Delocalized
+    | EXPLICIT_MOBILE    // Tautomeric / Resonant Tautomer (Anubandha)
     | UP_BOND            // Up stereo bond
     | DOWN_BOND          // Down stereo bond
 
@@ -104,13 +104,14 @@ REV_DATIVE: "<-"
 SINGLE_BOND: "-"
 DOUBLE_BOND: "="
 TRIPLE_BOND: "#"
-AROMATIC_BOND: ":"
+AROMATIC_BOND: "~"
+EXPLICIT_MOBILE: "=:"
 UP_BOND: "/"
 DOWN_BOND: "\\"
 
 
 // =============================================================
-// FIX 5: Branches can hold molecular_chain OR peptide_chain
+// Branches can hold molecular_chain OR peptide_chain
 // This enables glycosylation notation like (N{Gly})
 // Bond-first branches like (=O) are standard: bond specifies
 // how the branch connects to the parent chain
@@ -120,11 +121,18 @@ branch: "(" branch_content ")"
 branch_content: peptide_chain
               | bond? molecular_chain
 
-// === Local Ring Closures (SCRIPT key feature) ===
-// FIX 10: named_ring only appears in molecular context via local_ring
-local_ring: DIGIT              // 1-9 atoms back
-          | "%" DIGIT DIGIT    // 10-99 atoms back
-          | named_ring         // [A], [B], etc. for polycycles
+// === V2 RING CLOSURE (The Anubandha System) ===
+// &6: = 6-membered aromatic ring
+// &6. = 6-membered aliphatic ring
+// Fallback to absolute jumps (%) for extreme polycycles still supported if length unspecified
+local_ring: ring_closure
+          | DIGIT              // Legacy 1-9 atoms back
+          | "%" DIGIT DIGIT    // Legacy 10-99 atoms back
+          | named_ring         // Legacy [A], [B], etc. for polycycles
+
+ring_closure: "&" INT anubandha
+anubandha: ":"   // Resonant / Aromatic
+         | "."   // Aliphatic / Standard
 
 named_ring: "[" LETTER "]"
 

@@ -35,36 +35,36 @@ class SCRIPTCanonicalizer:
         start_indices = [i for i, r in enumerate(ranks) if r == 0]
         start_atom = start_indices[0] if start_indices else 0
         
-        # First pass: identify ring bonds and collect DFS neighbor orders
+        # First pass: identify ring bonds
         visited = set()
         ring_bonds_set = set()
-        self._identify_rings(mol, start_atom, visited, ring_bonds_set, -1, ranks)
+        self._find_ring_bonds(mol, start_atom, visited, -1, ring_bonds_set)
         
         # Second pass: collect DFS neighbor orders for stereochemistry
-        atom_to_id = {}
+        atom_to_id_collect = {}
         dfs_neighbor_orders = {}
-        self._collect_dfs_neighbor_orders(mol, start_atom, atom_to_id, ranks, -1, ring_bonds_set, dfs_neighbor_orders)
+        self._collect_dfs_neighbor_orders(mol, start_atom, atom_to_id_collect, ranks, -1, ring_bonds_set, dfs_neighbor_orders)
         
         # 3. Perceive chirality using DFS neighbor orders as reference
         perceive_chirality(mol, ranks, dfs_neighbor_orders)
         
         # 4. Build canonical string
         atom_to_id = {}
-        ring_bonds = {}
-        ring_counter = [1]
+        depths = {start_atom: 1} # Depth starts at 1
+        ring_counter = [0] # Ring counter for V2
         
-        result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_bonds, ring_counter, ring_bonds_set)
+        result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
         
         return result
     
-    def _identify_rings(self, mol: CoreMolecule, atom_idx, visited, ring_bonds, from_bond_idx, ranks):
+    def _find_ring_bonds(self, mol: CoreMolecule, atom_idx, visited, from_bond_idx, ring_bonds):
         """First pass: identify which bonds are ring closures."""
         visited.add(atom_idx)
         
         neighbors = []
         for nbr_idx, bond_idx in mol.adj.get(atom_idx, []):
             if bond_idx != from_bond_idx:
-                neighbors.append((ranks[nbr_idx], nbr_idx, bond_idx))
+                neighbors.append((mol.atoms[nbr_idx].rank, nbr_idx, bond_idx)) # Use atom rank for sorting
                 
         neighbors.sort(key=lambda x: (x[0], x[1]))
         
@@ -72,7 +72,7 @@ class SCRIPTCanonicalizer:
             if nbr_idx in visited:
                 ring_bonds.add(bond_idx)
             else:
-                self._identify_rings(mol, nbr_idx, visited, ring_bonds, bond_idx, ranks)
+                self._find_ring_bonds(mol, nbr_idx, visited, bond_idx, ring_bonds)
     
     def _collect_dfs_neighbor_orders(self, mol: CoreMolecule, atom_idx, atom_to_id, ranks, from_bond_idx, ring_bonds_set, dfs_orders):
         """Collect DFS neighbor orders for stereochemistry reference."""
@@ -125,11 +125,12 @@ class SCRIPTCanonicalizer:
             if nbr_idx not in atom_to_id:
                 self._collect_dfs_neighbor_orders(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_bonds_set, dfs_orders)
 
-    def _dfs(self, mol: CoreMolecule, atom_idx, atom_to_id, ranks, from_bond_idx, ring_bonds, ring_counter, ring_bonds_set):
+    def _dfs(self, mol: CoreMolecule, atom_idx, atom_to_id, ranks, from_bond_idx, ring_counter, ring_bonds_set, depths):
         """DFS traversal that builds the SCRIPT string."""
         atom_string_id = len(atom_to_id)
         atom_to_id[atom_idx] = atom_string_id
         atom = mol.atoms[atom_idx]
+        curr_depth = depths.get(atom_idx, 1)
 
         parent_idx = -1
         if from_bond_idx >= 0:
@@ -148,10 +149,13 @@ class SCRIPTCanonicalizer:
             if bond_idx in ring_bonds_set:
                 if nbr_idx in atom_to_id:
                     if atom_to_id[nbr_idx] < atom_string_id:
-                        # Back-count closure
-                        back_count = atom_string_id - atom_to_id[nbr_idx] + 1
-                        bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx)
-                        ring_closures.append((back_count, bond_sym, nbr_idx))
+                        # Topological distance is the difference in depths
+                        topo_size = curr_depth - depths.get(nbr_idx, 1) + 1
+                        is_arom = mol.bonds[bond_idx].bond_type == 4
+                        anubandha = ":" if is_arom else "."
+                        bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol)
+                        if is_arom: bond_sym = "" # redundant for &6:
+                        ring_closures.append((topo_size, f"{bond_sym}&{topo_size}{anubandha}", nbr_idx))
                     else:
                         # This shouldn't happen with sorted DFS
                         pass
@@ -179,13 +183,12 @@ class SCRIPTCanonicalizer:
         # Build string parts
         parts = []
         if from_bond_idx >= 0:
-            parts.append(self._bond_symbol(mol.bonds[from_bond_idx], atom_idx))
+            parts.append(self._bond_symbol(mol.bonds[from_bond_idx], atom_idx, mol))
 
         parts.append(self._atom_string(atom, atom_idx, mol, ranks, ordered_neighbors))
         
         for back_count, bond_sym, _ in ring_closures:
-            if back_count <= 9: parts.append(bond_sym + str(back_count))
-            else: parts.append(bond_sym + '%' + str(back_count).zfill(2))
+            parts.append(bond_sym)
 
         # Recursively process tree edges
         if tree_edges:
@@ -193,13 +196,15 @@ class SCRIPTCanonicalizer:
             for i in range(len(tree_edges) - 1):
                 _, nbr_idx, bond_idx = tree_edges[i]
                 if nbr_idx not in atom_to_id:
-                    branch_str = self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_bonds, ring_counter, ring_bonds_set)
+                    depths[nbr_idx] = curr_depth + 1
+                    branch_str = self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_counter, ring_bonds_set, depths)
                     parts.append('(' + branch_str + ')')
             
             # Process last edge as main chain
             _, nbr_idx, bond_idx = tree_edges[-1]
             if nbr_idx not in atom_to_id:
-                parts.append(self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_bonds, ring_counter, ring_bonds_set))
+                depths[nbr_idx] = curr_depth + 1
+                parts.append(self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_counter, ring_bonds_set, depths))
             else:
                 # If the "main chain" edge was already visited via a branch, 
                 # we might need to convert one of the previous branches to the main chain.
@@ -244,11 +249,12 @@ class SCRIPTCanonicalizer:
         parts.append(']')
         return "".join(parts)
 
-    def _bond_symbol(self, bond, to_atom_idx):
+    def _bond_symbol(self, bond, to_atom_idx, mol):
         bt = bond.bond_type
         if bt == 2: return '='
         if bt == 3: return '#'
-        if bt == 4: return ':' # SCRIPT uses : for aromatic if not implied
+        if bt == 4: 
+            return '~'
         
         if bond.bond_dir != 0:
             is_reverse = (bond.end_atom_idx == to_atom_idx)

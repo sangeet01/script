@@ -22,7 +22,7 @@ class SCRIPTInterpreter(Interpreter):
     def __init__(self):
         super().__init__()
         self.state = GenerativeStateMachine()
-        self._next_bond_order = 1
+        self._next_bond_order = -1
         self._next_bond_dir = 0
         
     def start(self, tree):
@@ -37,13 +37,13 @@ class SCRIPTInterpreter(Interpreter):
             data = child.data.lstrip('!')
             if data == 'atom_expr':
                 self.visit(child)
-                self._next_bond_order = 1 
+                self._next_bond_order = -1 
                 self._next_bond_dir = 0
             elif data == 'bond':
                 self.visit(child)
             elif data == 'local_ring':
                 self.visit(child)
-                self._next_bond_order = 1 
+                self._next_bond_order = -1 
                 self._next_bond_dir = 0
             elif data == 'branch':
                 self.state.open_branch()
@@ -67,6 +67,7 @@ class SCRIPTInterpreter(Interpreter):
         if t_type == 'DOUBLE_BOND': order = 2
         elif t_type == 'TRIPLE_BOND': order = 3
         elif t_type == 'AROMATIC_BOND': order = 4
+        elif t_type == 'EXPLICIT_MOBILE': order = 4  # Treat explicit mobile =: as aromatic/delocalized internally
         elif t_type == 'UP_BOND': direction = 3
         elif t_type == 'DOWN_BOND': direction = 4
         return order, direction
@@ -131,7 +132,25 @@ class SCRIPTInterpreter(Interpreter):
         return 0
 
     def local_ring(self, tree):
-        # Look for named ring or digits
+        # Check for V2 ring closures: &INT: or &INT.
+        ring_closure_nodes = list(tree.find_data('ring_closure'))
+        if ring_closure_nodes:
+            # It's an Anubandha ring closure
+            node = ring_closure_nodes[0]
+            
+            # The children of ring_closure are the parsed tokens/trees.
+            # However, because of the '!' patch, we scan all values.
+            tokens = [str(t) for t in node.scan_values(lambda x: isinstance(x, Token))]
+            
+            ring_size_str = "".join([t for t in tokens if t.isdigit()])
+            ring_size = int(ring_size_str) if ring_size_str else 0
+            
+            is_resonant = ":" in tokens
+            
+            self.state.add_v2_ring(ring_size, is_resonant, bond_order=self._next_bond_order)
+            return
+
+        # Look for named ring or digits (Legacy)
         named = list(tree.find_data('named_ring'))
         if named:
             letter = "".join([str(t) for t in named[0].scan_values(lambda x: isinstance(x, Token)) if str(t).isalpha()])
@@ -166,7 +185,7 @@ class SCRIPTParser:
         try:
             tree = self.parser.parse(script_string)
             self.interpreter.state = GenerativeStateMachine()
-            self.interpreter._next_bond_order = 1
+            self.interpreter._next_bond_order = -1
             self.interpreter._next_bond_dir = 0
             mol = self.interpreter.visit(tree)
             

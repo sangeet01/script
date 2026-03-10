@@ -26,15 +26,15 @@ class GenerativeStateMachine:
         self.valence_used: Dict[int, int] = {} # idx -> used valence
         self.registers: Dict[str, int] = {} # Named ring registers [A] -> atom_idx
         self.is_bracket: Dict[int, bool] = {} # idx -> was in brackets
+        self.parents: Dict[int, int] = {} # idx -> parent_idx in DFS tree
 
     def add_atom(self, symbol: str, charge: int = 0, isotope: int = 0, 
                  hcount: Optional[int] = None, chiral: Optional[str] = None,
                  bond_order: int = 1, bond_dir: int = 0,
-                 is_bracket: bool = False) -> int:
+                 is_bracket: bool = False, is_aromatic: bool = False) -> int:
         """Add an atom and move the state pointer to it."""
         atomic_num = self._get_atomic_num(symbol)
-        atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge, isotope=isotope)
-        atom.symbol = symbol # Store symbol for hypervalency check
+        atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge, isotope=isotope, symbol=symbol, is_aromatic=is_aromatic)
         
         atom.implicit_hs = hcount # None means automatic
         if chiral:
@@ -55,6 +55,7 @@ class GenerativeStateMachine:
         # If there's a current atom, we implicitly create a bond
         if self.current_atom_idx is not None:
             self.add_bond(self.current_atom_idx, atom_idx, bond_order, bond_dir=bond_dir)
+            self.parents[atom_idx] = self.current_atom_idx
             
         self.current_atom_idx = atom_idx
         return atom_idx
@@ -65,12 +66,22 @@ class GenerativeStateMachine:
         """
         if u_idx == v_idx: return False
         
+        # Resolve implicit bond (-1)
+        if order == -1:
+            u_arom = getattr(self.mol.atoms[u_idx], 'is_aromatic', False)
+            v_arom = getattr(self.mol.atoms[v_idx], 'is_aromatic', False)
+            order = 4 if (u_arom and v_arom) else 1
+            
         existing_bond = self.mol.get_bond(u_idx, v_idx)
         
         max_u = self._get_max_valence(u_idx)
         max_v = self._get_max_valence(v_idx)
         
         v_inc = order if order != 4 else 1.5
+        
+        # Aromatic bonds bypass strict fractional valence checks 
+        # to allow fused rings (3 * 1.5 = 4.5 > 4 for Carbon).
+        is_arom_request = (order == 4)
         
         if existing_bond:
             # Upgrade logic
@@ -91,8 +102,11 @@ class GenerativeStateMachine:
             avail_u = max_u - self.valence_used[u_idx]
             avail_v = max_v - self.valence_used[v_idx]
             
-            extra = min(diff, avail_u, avail_v)
-            if extra <= 0: return False 
+            if is_arom_request:
+                extra = diff
+            else:
+                extra = min(diff, avail_u, avail_v)
+                if extra <= 0: return False 
             
             existing_bond.bond_type = order
             self.valence_used[u_idx] += extra
@@ -102,13 +116,17 @@ class GenerativeStateMachine:
         avail_u = max_u - self.valence_used[u_idx]
         avail_v = max_v - self.valence_used[v_idx]
         
-        actual_inc = min(v_inc, avail_u, avail_v)
-        if actual_inc <= 0: return False
+        if is_arom_request:
+            actual_inc = v_inc
+        else:
+            actual_inc = min(v_inc, avail_u, avail_v)
+            if actual_inc <= 0: return False
             
-        bt = 1
-        if actual_inc >= 3: bt = 3
-        elif actual_inc >= 2: bt = 2
-        elif actual_inc >= 1.5 and order == 4: bt = 4
+        bt = order
+        if not is_arom_request:
+            if actual_inc >= 3: bt = 3
+            elif actual_inc >= 2: bt = 2
+            else: bt = 1
 
         self.mol.add_bond(u_idx, v_idx, bt, bond_dir=bond_dir)
         self.valence_used[u_idx] += actual_inc
@@ -123,7 +141,7 @@ class GenerativeStateMachine:
         if self.stack:
             self.current_atom_idx = self.stack.pop()
 
-    def add_ring(self, identifier: Any, bond_order: int = 1):
+    def add_ring(self, identifier: Any, bond_order: int = -1):
         """Close a ring using back-counting (int) or named register (str)."""
         if self.current_atom_idx is None: return
         
@@ -142,6 +160,56 @@ class GenerativeStateMachine:
                 
         if 0 <= target_idx < len(self.mol.atoms):
             self.add_bond(self.current_atom_idx, target_idx, bond_order)
+            # Mark the bond as a ring closure for the target
+            bond = self.mol.get_bond(self.current_atom_idx, target_idx)
+            if bond:
+                bond.is_rc = True
+
+    def add_v2_ring(self, ring_size: int, is_resonant: bool, bond_order: int = -1):
+        """Close a V2 ring setting aromatic/resonant flags automatically over the topological cycle."""
+        if self.current_atom_idx is None: return
+        if ring_size < 3: return # Invalid ring size
+        
+        # Topological walk back to find the target atom
+        curr_trace = self.current_atom_idx
+        for _ in range(ring_size - 1):
+            if curr_trace in self.parents:
+                curr_trace = self.parents[curr_trace]
+            else:
+                # Path terminated early? Fallback to index-based if something failed, but should not happen in valid DFS
+                return
+        
+        target_idx = curr_trace
+        
+        if 0 <= target_idx < len(self.mol.atoms):
+            # The bond itself
+            bo = 4 if (is_resonant or bond_order == 4) else (1 if bond_order == -1 else bond_order)
+            self.add_bond(self.current_atom_idx, target_idx, bo)
+            
+            bond = self.mol.get_bond(self.current_atom_idx, target_idx)
+            if bond:
+                bond.is_rc = True
+                bond.is_aromatic = is_resonant
+                
+            # If resonant, walk back on the DFS path and mark atoms and intermediate bonds as aromatic
+            if is_resonant:
+                # Mark current and target
+                self.mol.atoms[self.current_atom_idx].is_aromatic = True
+                self.mol.atoms[target_idx].is_aromatic = True
+                
+                # Trace back from current to target via parents
+                curr = self.current_atom_idx
+                while curr != target_idx and curr in self.parents:
+                    p = self.parents[curr]
+                    self.mol.atoms[p].is_aromatic = True
+                    b = self.mol.get_bond(curr, p)
+                    if b:
+                        b.bond_type = 4
+                        b.is_aromatic = True
+                    curr = p
+                    if curr == target_idx: break
+                    # Safety break
+                    if len(self.parents) < 1: break # Should not happen
 
     def _get_max_valence(self, atom_idx: int) -> int:
         atom = self.mol.atoms[atom_idx]

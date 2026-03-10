@@ -7,17 +7,14 @@ limitations in SMILES while maintaining human readability.
 
 from .parser import SCRIPTParser
 from .canonical import canonicalize_SCRIPT
+from .validator import is_valid_SCRIPT
+from .peptide import expand_peptide, is_valid_peptide
 
-# Convenience functions
+# Convenience function
 def parse_script(script_string: str):
     """Parse SCRIPT string to internal representation"""
     parser = SCRIPTParser()
     return parser.parse(script_string)
-
-def is_valid_SCRIPT(script_string: str) -> bool:
-    """Check if SCRIPT string is valid"""
-    result = parse_script(script_string)
-    return result["success"]
 
 # RDKit integration (optional)
 try:
@@ -33,5 +30,5 @@ try:
 except ImportError:
     RDKIT_AVAILABLE = False
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"
 __author__ = "SCRIPT Development Team"
