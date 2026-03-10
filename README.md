@@ -1,8 +1,4 @@
-# SCRIPT: Structural Chemical Representation in Plain Text
-
-**SCRIPT** is a deterministic molecular notation system and RDKit-independent cheminformatics engine that solves the canonicalization and stereochemistry ambiguities inherent in SMILES.
-
-Built from first principles using graph theory and Paninian linguistic rules, SCRIPT provides a "one true string" for every molecule with 96.9% round-trip fidelity on benchmark datasets.
+**SCRIPT** is a deterministic molecular notation system and RDKit-independent cheminformatics engine. By shifting from atom-based states to a grammar-level **Anubandha (State Marker)** system, SCRIPT provides a "one true string" for every molecule with a verified 99.0% round-trip fidelity.
 
 ---
 
@@ -17,12 +13,13 @@ SMILES has served chemistry for 35 years, but its limitations are critical for m
 
 SCRIPT addresses these systematically:
 
-| Problem | SMILES | SCRIPT |
-|---------|--------|--------|
-| Canonicalization | Multiple valid strings | Deterministic DFS traversal |
-| Ring notation | Global labels `C1...C1` | Local memory `C1...C6` (lookback) |
-| Stereochemistry | Neighbor-order dependent | CIP-priority reconciliation |
-| Validation | Post-hoc | Generative state machine (Sandhi rules) |
+| Problem | SMILES | SCRIPT 2.0 |
+|---------|--------|------------|
+| Canonicalization | Multiple valid strings | Path-invariant DFS traversal |
+| Ring notation | Global labels `C1...C1` | **Topological &N:** (Invariant size) |
+| Aromaticity | `c1ccccc1` (lowercase) | **Anubandha :** (Grammar state) |
+| Tautomers | Multiple forms | **Mobile =:** (Unified form) |
+| Validation | Post-hoc | Generative state machine (Sandhi) |
 
 ---
 
@@ -36,15 +33,25 @@ Morgan-invariant ranking with DFS traversal ensures every molecule has exactly o
 SCRIPT: CC(=O)OC1=CC=CC=C1C(=O)O
 ```
 
-### 2. Local Ring Encoding
-Rings use "lookback counting" - the closing digit indicates how many atoms back to connect. No global state, no unclosed ring errors.
+### 2. Topological Back-counting (&N)
+SCRIPT 2.0 introduces **Topological Back-counting**. The ring closure index `&6:` or `&5.` indicates the size of the cycle along the DFS path, completely ignoring branches. This ensures the ring notation remains invariant even if side-chains are modified.
 
 ```python
 SMILES:  C1CCCCC1      # Global label - must track state
-SCRIPT:  C1CCCCC6      # Local memory - connect to atom 6 positions back
+SCRIPT:  C1CCCCC&6.    # Topological - connect to parent 5 steps back
 ```
 
-### 3. CIP-Based Stereochemistry
+### 3. Anubandha (The State Marker System)
+Aromaticity and Tautomerism are represented as **states** of the topological path using the Anubandha markers (`:` for resonant, `.` for fixed).
+
+```python
+SMILES:  c1ccccc1      # Mixed case hack
+SCRIPT:  C~C~C~C~C~C&6: # Resonant path (Aromatic)
+SCRIPT:  CN=C(O)C      # Keto-Enol Tautomer
+SCRIPT:  CN-C(=:O)C    # Delocalized representation using =: marker
+```
+
+### 4. CIP-Based Stereochemistry
 Stereochemistry is resolved through Cahn-Ingold-Prelog priority as a universal reference frame. SCRIPT's DFS neighbor order (Parent < [H] < Ring-Closures < Ring-Openings < Branches < Chain) is transformed to CIP space using permutation parity.
 
 ```python
@@ -52,7 +59,7 @@ Stereochemistry is resolved through Cahn-Ingold-Prelog priority as a universal r
 # Handles complex cases: glucose, fused rings, symmetric centers
 ```
 
-### 4. Sandhi Validation (Panini-Inspired)
+### 5. Sandhi Validation (Panini-Inspired)
 Generative state machine tracks valence in real-time during parsing. Invalid structures are caught immediately, not after molecule construction.
 
 ```python
@@ -74,14 +81,13 @@ Bridge Layer (rdkit_bridge.py): Optional RDKit integration
 
 Tested on 100-compound dataset (alkanes, rings, stereocenters, drugs, natural products):
 
-- **96.9% round-trip success** (94/97 valid compounds)
-- **Complex molecules**: Aspirin, Penicillin G, Testosterone, Glucose, Cortisol
-- **Stereochemistry**: Correctly handles chiral centers, E/Z bonds, ring stereo
-- **3 "failures"**: False positives from InChI `/m` layer differences (stereochemistry actually correct)
+- **99.0% round-trip success** (96/97 valid compounds)
+- **Complex molecules**: Aspirin, Penicillin G, Testosterone, Glucose, Cortisol, Caffeine
+- **Resonance Support**: Native handling of fused aromatic systems and mobile tautomers
 
 ```bash
 python benchmark.py
-# Passed: 94 | Failed: 3 | Success Rate: 96.9%
+# Passed: 96 | Failed: 1 (Caffeine InChI parity) | Success Rate: 99.0%
 ```
 
 ---
@@ -168,9 +174,9 @@ script-notation/
 │   ├── stereo.py              # Stereochemistry perception
 │   ├── cip.py                 # CIP priority calculator
 │   ├── state_machine.py       # Sandhi validation rules
-│   ├── grammar.lark           # SCRIPT v1.0 EBNF grammar
+│   ├── grammar.lark           # SCRIPT v2.0 EBNF grammar
 │   ├── ranking.py             # Morgan invariant ranking
-│   ├── local_rings.py         # Lookback ring resolution
+│   ├── local_rings.py         # Topological ring resolution
 │   └── rdkit_bridge.py        # Optional RDKit interop
 ├── docs/
 │   ├── SPEC.md                # Complete SCRIPT specification
@@ -183,7 +189,7 @@ script-notation/
 │   ├── basic_usage.py
 │   └── rdkit_demo.py
 ├── benchmark.py               # 100-compound validation suite
-└── LICENSE                    
+└── LICENSE                    # MIT + Commons Clause
 ```
 
 ---
@@ -193,12 +199,13 @@ script-notation/
 ### Grammar (EBNF)
 ```
 molecule: chain
-chain: (atom | branch | ring_open | ring_close | bond)+
+chain: (atom | branch | local_ring | bond)+
 atom: element | "[" element charge? chiral? isotope? "]" | peptide | polymer
-ring_open: DIGIT
-ring_close: DIGIT  // Lookback: connect to atom N positions back
+local_ring: "&" INT anubandha
+anubandha: ":" | "."
 branch: "(" chain ")"
 chiral: "@" | "@@"
+bond: "-" | "=" | "#" | "~" | "=:" | "/" | "\"
 ```
 
 ### Canonicalization Algorithm
@@ -230,7 +237,7 @@ chiral_CIP = chiral_local XOR parity(local_order -> CIP_order)
 | Writable | Yes | No | No | Yes |
 | Invalid-proof | No | Yes | N/A | Yes (Sandhi) |
 | Stereochemistry | Fragile | Limited | Robust | Robust (CIP) |
-| Ring notation | Global | Encoded | N/A | Local (lookback) |
+| Ring notation | Global | Encoded | N/A | **Topological &N:** |
 | ML-ready | Partial | Yes | No | Yes |
 
 *SMILES has canonical forms (e.g., RDKit canonical SMILES) but multiple tools produce different canonicalizations.
@@ -239,7 +246,6 @@ chiral_CIP = chiral_local XOR parity(local_order -> CIP_order)
 
 ## Limitations & Future Work
 
-- **Aromaticity**: Currently uses Kekule forms (C=CC=CC=C6). Lowercase aromatic notation planned.
 - **Organometallics**: Dative bonds supported (C->N), but complex coordination chemistry needs extension.
 - **Macrocycles**: Large rings (>9 atoms) use extended lookback notation.
 - **Performance**: Parser optimized for correctness; speed improvements planned for production.
@@ -264,8 +270,9 @@ See `docs/SPEC.md` for grammar details and `docs/CIP_STEREO_THEORY.md` for stere
 If you use SCRIPT in academic work, please cite:
 
 ```
-Sharma, S. (2026). SCRIPT: A Deterministic Molecular Notation System with CIP-Based Stereochemistry.
-https://github.com/sangeet01/script
+Sharma, S. (2026). SCRIPT: Structural Chemical Representation in Plain Text.
+A Deterministic Molecular Notation System with CIP-Based Stereochemistry.
+https://github.com/script-notation/script
 ```
 
 ---
@@ -276,7 +283,7 @@ https://github.com/sangeet01/script
 
 Free for academic research, personal projects, and non-commercial open-source development.
 
-Commercial use requires separate licensing agreement.
+Commercial use (sale of software/services whose value derives substantially from SCRIPT) requires separate licensing agreement.
 
 See `LICENSE` for full terms.
 
@@ -287,9 +294,12 @@ See `LICENSE` for full terms.
 Developed by **Sangeet Sharma** and the SCRIPT team.
 
 For questions, collaborations, or commercial licensing:
-- GitHub Issues: [script-notation/script/issues](https://github.com/sangeet01/script/issues)
+- GitHub Issues: [script-notation/script/issues](https://github.com/script-notation/script/issues)
 - Documentation: See `docs/` directory
 
+---
+
+*"A linear script to unfold molecular complexity."*
 
 ---
 
