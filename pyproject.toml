@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "script-notation"
-version = "0.1.0"
-description = "Structural Chemical Representation in Plain Text - A canonical, invalid-proof, human-readable upgrade to SMILES"
+version = "2.0.0"
+description = "SCRIPT 2.0: A topological, grammar-governed molecular notation for AI and high-precision cheminformatics."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
