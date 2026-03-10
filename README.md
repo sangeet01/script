@@ -1,3 +1,6 @@
+# SCRIPT: Structural Chemical Representation In Plain Text
+
+
 **SCRIPT** is a deterministic molecular notation system and RDKit-independent cheminformatics engine. By shifting from atom-based states to a grammar-level **Anubandha (State Marker)** system, SCRIPT provides a "one true string" for every molecule with a verified 99.0% round-trip fidelity.
 
 ---
