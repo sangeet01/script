@@ -331,9 +331,6 @@ Developed by **Sangeet Sharma** and the SCRIPT team.
 - GitHub Issues: [script-notation/script/issues](https://github.com/script-notation/script/issues)
 - Documentation: See `docs/` directory
 
----
-
-*"A linear script to unfold molecular complexity — from the singlet to the surface."*
 
 ---
 
