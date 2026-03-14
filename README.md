@@ -2,7 +2,7 @@
 # SCRIPT: Structural Chemical Representation In Plain Text
 
 <p align="center">
-  <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" width="100%">
+  <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" >
 </p>
 
 **SCRIPT** is a deterministic, sovereign molecular notation system and RDKit-independent cheminformatics engine. Built on a Paninian linguistic model, SCRIPT provides a "one true string" for every molecule, reaction, material, and quantum state with 100% native round-trip consistency.
