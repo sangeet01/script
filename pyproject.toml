@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "script-notation"
-version = "2.0.0"
-description = "SCRIPT 2.0: A topological, grammar-governed molecular notation for AI and high-precision cheminformatics."
+version = "3.0.0"
+description = "SCRIPT V3: A deterministic molecular notation for AI and Materials Science, featuring support for alloys, crystallography, and electronic states."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -14,9 +14,9 @@ authors = [
 maintainers = [
     {name = "SCRIPT Development Team", email = "script@example.com"}
 ]
-keywords = ["chemistry", "cheminformatics", "smiles", "molecular", "notation"]
+keywords = ["chemistry", "cheminformatics", "materials-science", "alloys", "crystallography", "smiles", "molecular-notation"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
