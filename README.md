@@ -309,7 +309,7 @@ peptide_chain:  { AMINO_ACID (. AMINO_ACID)* }
 ```
 Sharma, S. (2026). SCRIPT: Structural Chemical Representation in Plain Text.
 A Deterministic Molecular Notation System with Materials & State Expansion (V3).
-https://github.com/script-notation/script
+https://github.com/sangeet01/script
 ```
 
 ---
@@ -328,7 +328,7 @@ See `LICENSE` for full terms.
 
 Developed by **Sangeet Sharma** and the SCRIPT team.
 
-- GitHub Issues: [script-notation/script/issues](https://github.com/script-notation/script/issues)
+- GitHub Issues: [sangeet01/script/issues](https://github.com/sangeet01/script/issues)
 - Documentation: See `docs/` directory
 
 
