@@ -21,7 +21,7 @@ SMILES has served chemistry for 35 years, but its limitations are critical for m
 
 SCRIPT addresses all of these systematically:
 
-| Problem | SMILES | SCRIPT V3 |
+| Problem | SMILES | SCRIPT    |
 |---------|--------|-----------|
 | Canonicalization | Multiple valid strings | Path-invariant DFS traversal |
 | Ring notation | Global labels `C1...C1` | Topological `&N:` (invariant size) |
