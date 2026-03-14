@@ -1,52 +1,127 @@
-// SCRIPT.lark - Complete Grammar for SCRIPT 1.0
+// SCRIPT.lark - Complete Grammar for SCRIPT 2.0
 // Structural Chemical Representation in Plain Text
-// February 2026
+// February 2026 - V3 Materials & State Expansion
+//
+// V3 additions (remaining.md):
+//   1. Alloys & Non-Stoichiometry    -> state_attr: "~" FLOAT (Vikalpa)
+//   2. Crystallography & Polymorphs  -> macroscopic_context: [[ label ]]
+//   3. Extended Polymers (Stochastic)-> polymer_block, polymer_junction
+//   4. Electronic & Excited States   -> state_attr: "s:" INT, "*"
+//   5. Surface & Interface Chemistry -> phase_boundary: "|"
 
 
 // === Lark Directives ===
 %import common.WS
 %import common.INT
+%import common.FLOAT
 %ignore WS
 
 
-// === Start Rule ===
-start: script
+// =============================================================
+// TOP LEVEL ENTRY POINT
+//
+// Every SCRIPT string is parsed as a macroscopic_structure.
+// A macroscopic_structure is:
+//   - An optional crystallographic / space-group context  [[label]]
+//   - Followed by one or more chemical entities (reaction or script)
+//   - Entities separated by phase_boundary "|" (surface / interface)
+//
+// Examples:
+//   CC(=O)O                         -> plain script
+//   C>>CC                           -> reaction
+//   [[Rutile]] Ti(O)2               -> crystallographic context
+//   [[Pt_111]] | >C=O              -> surface adsorption
+// =============================================================
+?start: entry
 
-// === Top Level: Multi-component Structure ===
-// Components separated by "." (salts, mixtures)
-script: component ("." component)*
+?entry: macroscopic_structure
+
+macroscopic_structure: macroscopic_context VBAR? (reaction | script) (VBAR (reaction | script))*
+                     | (reaction | script) (VBAR (reaction | script))*
+
+// V3.2 Crystallography (Sthana) - space group / unit cell label
+macroscopic_context: "[[" CONTEXT_LABEL "]]"
+CONTEXT_LABEL: /[A-Za-z0-9_-]+/
+
+// V3.5 Surface & Interface Chemistry (Adhikarana) - phase separator
+VBAR: "|"
+
+
+// =============================================================
+// REACTION GRAMMAR (The Kriya)
+// Reactions are one or more scripts separated by ">>" or "=>"
+// =============================================================
+reaction: script (reaction_arrow script)+
+reaction_arrow: ">>" | "=>"
+
+
+// =============================================================
+// SCRIPT - Multi-component Structure
+// Components separated by "." (salts/solvates) or "~" (ionic)
+// =============================================================
+script: component (fragment_separator component)*
+fragment_separator: "." | "~"
 
 component: peptide_chain
          | polymer
          | molecular_chain
+         | ring_closure          // Standalone Anubandha ring (v1.5)
+
 
 // =============================================================
-// FIX 1+3: molecular_chain MUST start with an atom_expr
-// Then optionally: bond? (atom_expr | local_ring | branch)
-// This prevents invalid strings like "==#" or "6(C)"
-// FIX 3: atom_expr is now a proper non-terminal
+// MOLECULAR CHAIN
+// A molecular chain starts with an optional bond (for organometallics
+// like >C=O adsorbed on surfaces, or haptic *5 in ferrocene).
+// Then: atom_expr followed by (bond? atom_or_ring_or_branch)*
 // =============================================================
-molecular_chain: atom_expr (bond? (atom_expr | local_ring | branch))*
+molecular_chain: bond? atom_expr (bond? (atom_expr | local_ring | branch))*
 
-atom_expr: ORGANIC_ATOM
-         | bracket_atom
-         | WILDCARD
+atom_expr: (ORGANIC_ATOM | bracket_atom | dhatu | WILDCARD) multiplier?
+multiplier: INT
 
-// === Organic Atoms (UPPERCASE ONLY - Kekule / Anubandha System) ===
-// Lowercase atoms are REMOVED. Aromaticity is handled topologically via ring closures.
+
+// =============================================================
+// DHATU (The V2 Atom Notation with State Block)
+// Dhātu = Sanskrit "root" - the irreducible atomic specification.
+// Example: C<13,+>@  (Carbon-13, cation, chiral)
+//          Ti<~0.9>  (Titanium with fractional alloy occupancy)
+//          O<s:3>    (Triplet oxygen)
+// =============================================================
+dhatu: ATOM [state_block] chiral?
+
+state_block: "<" state_attr ("," state_attr)* ">"
+
+// !state_attr keeps tree nodes for every alternative (needed by parser)
+!state_attr: INT            // Mass / Isotope:            <13>
+           | CHARGE_ATTR    // Formal Charge:             <+>, <2->
+           | GEOMETRY       // Coordination geometry:     <sqp>, <oct>
+           | H_COUNT_ATTR   // Explicit H count:          <h3>
+           | "m"            // Tautomer / Mobility flag:  <m>
+           | "~" FLOAT      // Vikalpa - Alloy occupancy: <~0.9>    [V3.1]
+           | "s:" INT       // Svara   - Spin multiplicity:<s:3>    [V3.4]
+           | "*"            // Excited state marker:       <*>       [V3.4]
+
+
+// =============================================================
+// ORGANIC ATOMS (UPPERCASE ONLY - Kekule / Anubandha System)
+// Lowercase atoms removed. Aromaticity handled topologically.
+// =============================================================
 ORGANIC_ATOM: "Br" | "Cl" | "At" | "Ts"
             | "Ph"
             | "B" | "C" | "N" | "O" | "P" | "S" | "F" | "I"
-            
+
 WILDCARD: "*"
 
+
 // =============================================================
-// bracket_atom now includes optional radical marker
-// Supports [O.] (monovalent radical) and [C..] (divalent radical)
+// BRACKET ATOM - Full periodic table, explicit specification
+// Supports: [13C@H-:1]  (isotope, chiral, H, charge, mapping)
+//           [O.]         (radical)
+//           [Fe]         (transition metal)
 // =============================================================
 bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? "]"
 
-// Full Periodic Table (uppercase only, all 118 elements)
+// Full Periodic Table (all 118 elements, uppercase only)
 element: "He" | "Li" | "Be" | "Ne"
        | "Na" | "Mg" | "Al" | "Si" | "Cl" | "Ar"
        | "Ca" | "Sc" | "Ti" | "Cr" | "Mn" | "Fe" | "Co" | "Ni" | "Cu" | "Zn"
@@ -61,74 +136,92 @@ element: "He" | "Li" | "Be" | "Ne"
        | "Rg" | "Cn" | "Nh" | "Fl" | "Mc" | "Lv" | "Ts" | "Og"
        | "H" | "B" | "C" | "N" | "O" | "F" | "P" | "S" | "I" | "K" | "V" | "W" | "Y" | "U"
 
-// Isotope (mass number before element)
+// Isotope (mass number before element symbol)
 isotope: INT
 
-// Complete Stereochemistry Support (Anchored to DFS Path)
-chiral: "@@"          // Tetrahedral S (must come before @ for longest match)
-      | "@SP"         // Square planar
-      | "@OH"         // Octahedral
-      | "@AX"         // Axial / atropisomer
-      | "@TB"         // Trigonal bipyramidal
-      | "@PY"         // Pyramidal
-      | "@"           // Tetrahedral R
+// Complete Stereochemistry Support (Anchored to DFS Vak Order)
+chiral: "@@"        // Tetrahedral S   (must precede "@" for longest match)
+      | "@SP"       // Square planar
+      | "@OH"       // Octahedral
+      | "@AX"       // Axial / atropisomer
+      | "@TB"       // Trigonal bipyramidal
+      | "@PY"       // Pyramidal
+      | "@"         // Tetrahedral R
 
-// Hydrogen count
+// Hydrogen count inside brackets
 hcount: "H" INT?
 
-// Charges
+// Formal charge inside brackets
 charge: "++" | "--"
       | "+" INT?
       | "-" INT?
 
 // Radical marker inside bracket atoms
-// [O.] = monovalent radical, [C..] = divalent diradical
+// [O.]=monovalent radical,  [C..]=divalent diradical
 radical: ".." | "."
 
-// Ring class (atom mapping number)
+// Ring class = atom mapping number for reaction tracking
 ring_class: ":" INT
 
-// === Chemical Bonds (State Markers) ===
-bond: DATIVE             // Dative bond (organometallics)
-    | REV_DATIVE         // Reverse dative
-    | SINGLE_BOND        // Single bond
-    | DOUBLE_BOND        // Double bond
-    | TRIPLE_BOND        // Triple bond
-    | AROMATIC_BOND      // Aromatic / Delocalized
-    | EXPLICIT_MOBILE    // Tautomeric / Resonant Tautomer (Anubandha)
-    | UP_BOND            // Up stereo bond
-    | DOWN_BOND          // Down stereo bond
+
+// =============================================================
+// CHEMICAL BONDS (The State Markers / Sandhi)
+//
+// bond carries an optional INT for hapticity (e.g., *5 = eta-5)
+// This unifies the old bond + bond_explicit into one rule,
+// eliminating all Reduce/Reduce LALR collisions.
+// =============================================================
+bond: DATIVE             // Dative:         ->
+    | REV_DATIVE         // Reverse dative: <-
+    | SINGLE_BOND        // Single:          -
+    | DOUBLE_BOND        // Double:          =
+    | TRIPLE_BOND        // Triple:          #
+    | AROMATIC_BOND      // Aromatic:        :
+    | EXPLICIT_MOBILE    // Tautomeric:     =:
+    | UP_BOND            // Stereo up:       /
+    | DOWN_BOND          // Stereo down:     \
+    | COORDINATE_BOND    // Coordinate:      >
+    | hbond              // Haptic: *INT  or bare * (resonance)
+
+// hbond: bare STAR_BOND = resonant bond; STAR_BOND INT = haptic eta-n bond
+hbond: STAR_BOND INT?
 
 DATIVE: "->"
 REV_DATIVE: "<-"
 SINGLE_BOND: "-"
 DOUBLE_BOND: "="
 TRIPLE_BOND: "#"
-AROMATIC_BOND: "~"
+AROMATIC_BOND: ":"
 EXPLICIT_MOBILE: "=:"
 UP_BOND: "/"
 DOWN_BOND: "\\"
+COORDINATE_BOND: ">"
+STAR_BOND: "*"
+
 
 
 // =============================================================
-// Branches can hold molecular_chain OR peptide_chain
-// This enables glycosylation notation like (N{Gly})
-// Bond-first branches like (=O) are standard: bond specifies
-// how the branch connects to the parent chain
+// BRANCHES
+// Bond-first branches like (=O) specify how branch connects
+// to the parent chain. The leading bond is now part of
+// molecular_chain itself, so branch_content is clean.
 // =============================================================
-branch: "(" branch_content ")"
+branch: "(" branch_content ")" multiplier?
 
 branch_content: peptide_chain
-              | bond? molecular_chain
+              | molecular_chain
 
-// === V2 RING CLOSURE (The Anubandha System) ===
+
+// =============================================================
+// V2 RING CLOSURE (The Anubandha System)
 // &6: = 6-membered aromatic ring
 // &6. = 6-membered aliphatic ring
-// Fallback to absolute jumps (%) for extreme polycycles still supported if length unspecified
+// Legacy: bare digit (1-9 atoms back) or %NN
+// =============================================================
 local_ring: ring_closure
-          | DIGIT              // Legacy 1-9 atoms back
-          | "%" DIGIT DIGIT    // Legacy 10-99 atoms back
-          | named_ring         // Legacy [A], [B], etc. for polycycles
+          | DIGIT              // Legacy: 1-9 atoms back
+          | "%" DIGIT DIGIT    // Legacy: 10-99 atoms back
+          | named_ring         // Legacy: [A], [B] polycycles
 
 ring_closure: "&" INT anubandha
 anubandha: ":"   // Resonant / Aromatic
@@ -136,19 +229,18 @@ anubandha: ":"   // Resonant / Aromatic
 
 named_ring: "[" LETTER "]"
 
+
 // =============================================================
-// FIX 4+10: Peptide Chains {A.G.S.C[A]K}
+// PEPTIDE CHAINS {A.G.S.C[A]K}
 // Bridges can appear inline between monomers (C[A]K)
-// or after the full sequence: {A.G.S[A][B]}
+// or after the full sequence {A.G.S[A][B]}
 // =============================================================
 peptide_chain: "{" peptide_body "}" local_ring?
 
-// Peptide body: dot-separated monomer_elements, optional trailing bridges
-// Bridges can also act as separators: C[A]K means Cys-bridge-Lys
+// Peptide body: dot-separated monomer_elements + optional trailing bridges
 peptide_body: monomer_element ("." monomer_element)* bridge*
 
-// A monomer with optional trailing bridges and optional next monomer
-// This allows C[A]K (bridge between monomers without dot)
+// A monomer with optional trailing bridges
 monomer_element: monomer (bridge monomer)* bridge*
 
 // 20 Standard Amino Acids (single-letter AND 3-letter codes)
@@ -158,7 +250,6 @@ AMINO_ACID: "Ala" | "Arg" | "Asn" | "Asp" | "Cys" | "Glu" | "Gln" | "Gly"
           | "A" | "R" | "N" | "D" | "C" | "E" | "Q" | "G" | "H" | "I"
           | "L" | "K" | "M" | "F" | "P" | "S" | "T" | "W" | "Y" | "V"
 
-// FIX 4: monomer is only amino acid or PTM, no bridge_ref
 monomer: AMINO_ACID
        | PTM_CODE
 
@@ -167,32 +258,59 @@ PTM_CODE: "nitY" | "acK" | "ubK" | "suK" | "oxM" | "Hyp" | "Hyl"
         | "Orn" | "Cit" | "Sec" | "Pyl" | "Gla" | "Dpr" | "Dab" | "Sar"
         | "pS" | "pT" | "pY" | "mK" | "mR"
 
-// FIX 10: bridge only in peptide context (no collision with named_ring)
+// Bridge notation in peptide context (disambiguated from named_ring)
 bridge: "[" LETTER "]"
 
+
 // =============================================================
-// FIX 9: Polymers and Macromolecules (BigSMILES integration)
-// polymer_content can be molecular_chain or stochastic/branched
+// V3.3 EXTENDED POLYMERS (Abhyasa - Stochastic Copolymers)
+//
+// Syntax (polymers use {[ ]} to avoid conflict with peptide { }):
+//   {[CCCO]}n                    - simple repeating unit
+//   {[CCCO]}<n:50>               - defined-length block
+//   {[CCCO]}<n:50-100>           - stochastic range
+//   {[CCCO]}<n:50> -b- {[c1ccccc1CC]}<n:100>   - NOT supported inline (use component-level)
+//
+// polymer_block uses {[ ]} inside component rules to distinguish
+// from bracket_atom (which is [ ] inside molecular_chain).
 // =============================================================
-polymer: "{" polymer_content "}" repeat_spec?
+polymer: "{[" polymer_unit "]}" polymer_suffix?
 
-polymer_content: stochastic_unit
-               | branched_unit
-               | molecular_chain
+polymer_unit: molecular_chain | peptide_chain
 
-stochastic_unit: "[" molecular_chain "]" molecular_chain
+// Suffix: repeat count or block junction
+polymer_suffix: polymer_multiplier (polymer_junction polymer_multiplier)*
+              | repeat_spec
 
-branched_unit: "[" ">" "]" "<" "[" molecular_chain "]" molecular_chain
+polymer_multiplier: "<n:" INT ">"
+                  | "<n:" INT "-" INT ">"
 
-// FIX 8: repeat_spec with stochastic_ratio
-// stochastic_ratio uses underscore-separated format to avoid "." conflict
-// e.g. {block}0_7 means ratio 0.7
+// Block (-b-), random (-r-), alternating (-a-) junctions
+polymer_junction: "-b-" | "-r-" | "-a-"
+
+// Repeat spec for simple polymers: {[unit]}n, {[unit]}50, {[unit]}0_7
 repeat_spec: "n"
            | RATIO
            | INT
 
 RATIO: INT "_" INT
 
-// === Terminals ===
+
+// =============================================================
+// TERMINALS
+// =============================================================
 DIGIT: "0".."9"
 LETTER: "A".."Z"
+
+// ATOM terminal used by dhatu (V2 atom notation)
+ATOM: "He"|"Li"|"Be"|"Ne"|"Na"|"Mg"|"Al"|"Si"|"Cl"|"Ar"|"Ca"|"Sc"|"Ti"|"Cr"|"Mn"|"Fe"|"Co"|"Ni"|"Cu"|"Zn"|"Br"|"Kr"|"Rb"|"Sr"|"Zr"|"Pd"|"Ag"|"Cd"|"Sn"|"Sb"|"Te"|"Xe"|"Pt"|"Au"|"Hg"|"Pb"|"Bi"|"Rn"|"C"|"N"|"O"|"F"|"P"|"S"|"K"|"V"|"I"|"W"|"U"
+
+// Charge attribute terminal
+CHARGE_ATTR: "++" | "--" | "+" | "-" | /[0-9]+[+-]/ | /[+-][0-9]+/
+CHARGE: CHARGE_ATTR         // v1.5 alias
+
+// Coordination geometry
+GEOMETRY: "sqp" | "oct" | "tet" | "tbp"
+
+// Hydrogen count attribute
+H_COUNT_ATTR: "h" INT

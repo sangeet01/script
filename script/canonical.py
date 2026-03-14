@@ -45,8 +45,10 @@ class SCRIPTCanonicalizer:
         dfs_neighbor_orders = {}
         self._collect_dfs_neighbor_orders(mol, start_atom, atom_to_id_collect, ranks, -1, ring_bonds_set, dfs_neighbor_orders)
         
-        # 3. Perceive chirality using DFS neighbor orders as reference
-        perceive_chirality(mol, ranks, dfs_neighbor_orders)
+        # 3. Perceive chirality (skip if already resolved natively)
+        has_chiral_data = hasattr(mol, 'chiral_centers') and mol.chiral_centers
+        if not has_chiral_data:
+            perceive_chirality(mol, ranks, dfs_neighbor_orders)
         
         # 4. Build canonical string
         atom_to_id = {}
@@ -108,10 +110,10 @@ class SCRIPTCanonicalizer:
         tree_edges.sort()
         ring_openings.sort()
         
-        # Build DFS neighbor order (SCRIPT Priority)
+        # Build DFS neighbor order (SCRIPT Priority): [H] < Parent < Rings < Branches
         ordered_neighbors = []
-        if parent_idx != -1: ordered_neighbors.append(parent_idx)
         if atom.implicit_hs > 0: ordered_neighbors.append(-1)
+        if parent_idx != -1: ordered_neighbors.append(parent_idx)
         for _, nbr_idx, _ in ring_closures: ordered_neighbors.append(nbr_idx)
         for _, nbr_idx, _ in ring_openings: ordered_neighbors.append(nbr_idx)
         for _, nbr_idx, _ in tree_edges: ordered_neighbors.append(nbr_idx)
@@ -169,13 +171,12 @@ class SCRIPTCanonicalizer:
         ring_closures.sort()
         tree_edges.sort()
         ring_openings.sort()
-        
         # Build ordered neighbors for stereo perception
-        # SCRIPT Priority: Parent < [H] < Ring-Closures < Ring-Openings < Branches < Main-Chain
+        # SCRIPT Priority: [H] < Parent < Ring-Closures < Ring-Openings < Branches < Main-Chain
         ordered_neighbors = []
-        
+        ihs = getattr(atom, 'implicit_hs', 0) or 0
+        if ihs > 0: ordered_neighbors.append(-1)
         if parent_idx != -1: ordered_neighbors.append(parent_idx)
-        if atom.implicit_hs > 0: ordered_neighbors.append(-1)
         for _, _, nbr_idx in ring_closures: ordered_neighbors.append(nbr_idx)
         for _, nbr_idx, _ in ring_openings: ordered_neighbors.append(nbr_idx)
         for _, nbr_idx, _ in tree_edges: ordered_neighbors.append(nbr_idx)
@@ -197,8 +198,9 @@ class SCRIPTCanonicalizer:
                 _, nbr_idx, bond_idx = tree_edges[i]
                 if nbr_idx not in atom_to_id:
                     depths[nbr_idx] = curr_depth + 1
-                    branch_str = self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_counter, ring_bonds_set, depths)
-                    parts.append('(' + branch_str + ')')
+                    branch_result = self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_counter, ring_bonds_set, depths)
+                    if branch_result:
+                        parts.append('(' + branch_result + ')')
             
             # Process last edge as main chain
             _, nbr_idx, bond_idx = tree_edges[-1]
@@ -225,6 +227,7 @@ class SCRIPTCanonicalizer:
                 and atom.isotope == 0
                 and atom.radical_electrons == 0
                 and chiral_sym == ""
+                and (not hasattr(atom, 'mapping') or atom.mapping == 0)
                 and self._has_default_valence(atom, mol, atom_idx)):
             return symbol
 
@@ -236,15 +239,19 @@ class SCRIPTCanonicalizer:
         if chiral_sym:
             parts.append(chiral_sym)
 
-        if atom.implicit_hs > 0:
+        ihs = getattr(atom, 'implicit_hs', 0) or 0
+        if ihs > 0:
             parts.append('H')
-            if atom.implicit_hs > 1:
-                parts.append(str(atom.implicit_hs))
+            if ihs > 1:
+                parts.append(str(ihs))
         
         if atom.formal_charge > 0:
             parts.append('+' + (str(atom.formal_charge) if atom.formal_charge > 1 else ''))
         elif atom.formal_charge < 0:
             parts.append('-' + (str(abs(atom.formal_charge)) if atom.formal_charge < -1 else ''))
+            
+        if getattr(atom, 'mapping', 0) > 0:
+            parts.append(f':{atom.mapping}')
             
         parts.append(']')
         return "".join(parts)
@@ -254,7 +261,7 @@ class SCRIPTCanonicalizer:
         if bt == 2: return '='
         if bt == 3: return '#'
         if bt == 4: 
-            return '~'
+            return ':'
         
         if bond.bond_dir != 0:
             is_reverse = (bond.end_atom_idx == to_atom_idx)
@@ -267,14 +274,18 @@ class SCRIPTCanonicalizer:
 
     def _has_default_valence(self, atom, mol, atom_idx):
         if atom.symbol not in DEFAULT_VALENCE: return False
-        valence = atom.implicit_hs
+        
+        # Calculate TOTAL valence (bonds + implicit H)
+        valence = getattr(atom, 'implicit_hs', 0) or 0
         for nbr_idx, bond_idx in mol.adj.get(atom_idx, []):
-            bt = mol.bonds[bond_idx].bond_type
+            bond = mol.bonds[bond_idx]
+            bt = bond.bond_type
             if bt == 2: valence += 2
             elif bt == 3: valence += 3
             elif bt == 4: valence += 1.5
             else: valence += 1
-        return valence == DEFAULT_VALENCE[atom.symbol]
+            
+        return abs(valence - DEFAULT_VALENCE[atom.symbol]) < 0.1
 
 def canonicalize_mol(mol):
     """Note: This takes a CoreMolecule, not RDKit mol."""

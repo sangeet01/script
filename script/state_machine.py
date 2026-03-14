@@ -18,6 +18,19 @@ HYPERVALENT_MAX = {
     "P": 5, "S": 6, "Cl": 7, "Br": 7, "I": 7, "Xe": 8, "As": 5, "Se": 6
 }
 
+# Transition metals: variable oxidation states, use generous upper limit
+# Valence guard is bypassed for these to allow complex organometallic notation
+TRANSITION_METALS = {
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb",
+    "Dy", "Ho", "Er", "Tm", "Yb", "Lu",
+    "Ac", "Th", "Pa", "U", "Np", "Pu", "Am"
+}
+# Generous upper valence for all transition metals
+TRANSITION_METAL_MAX_VALENCE = 12
+
 class GenerativeStateMachine:
     def __init__(self):
         self.mol = CoreMolecule()
@@ -27,16 +40,28 @@ class GenerativeStateMachine:
         self.registers: Dict[str, int] = {} # Named ring registers [A] -> atom_idx
         self.is_bracket: Dict[int, bool] = {} # idx -> was in brackets
         self.parents: Dict[int, int] = {} # idx -> parent_idx in DFS tree
+        self.component_starts: List[int] = [] # Indices where new components start
+
+    def new_component(self):
+        """Reset the cursor to start a new disconnected component (Sandhi break)."""
+        self.current_atom_idx = None
+        if self.mol.atoms:
+            self.component_starts.append(len(self.mol.atoms))
 
     def add_atom(self, symbol: str, charge: int = 0, isotope: int = 0, 
                  hcount: Optional[int] = None, chiral: Optional[str] = None,
                  bond_order: int = 1, bond_dir: int = 0,
-                 is_bracket: bool = False, is_aromatic: bool = False) -> int:
+                 is_bracket: bool = False, is_aromatic: bool = False,
+                 mapping: int = 0, occupancy: float = 1.0, 
+                 spin: int = 0, is_excited: bool = False) -> int:
         """Add an atom and move the state pointer to it."""
         atomic_num = self._get_atomic_num(symbol)
-        atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge, isotope=isotope, symbol=symbol, is_aromatic=is_aromatic)
+        atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge, 
+                        isotope=isotope, symbol=symbol, 
+                        is_aromatic=is_aromatic, mapping=mapping,
+                        occupancy=occupancy, spin=spin, is_excited=is_excited)
         
-        atom.implicit_hs = hcount # None means automatic
+        atom.implicit_hs = hcount if hcount is not None else 0
         if chiral:
             # RDKit convention: CHI_TETRAHEDRAL_CW=1 (@@), CHI_TETRAHEDRAL_CCW=2 (@)
             tag = 2 if chiral == "@" else 1 if chiral == "@@" else 0
@@ -60,9 +85,11 @@ class GenerativeStateMachine:
         self.current_atom_idx = atom_idx
         return atom_idx
 
-    def add_bond(self, u_idx: int, v_idx: int, order: int, bond_dir: int = 0) -> bool:
+    def add_bond(self, u_idx: int, v_idx: int, order: int, bond_dir: int = 0,
+                 hapticity: int = 0, bond_class: str = "") -> bool:
         """
         Add or upgrade a bond between u and v with 'Sandhi' valence guards.
+        Stores hapticity and bond_class for organometallic bonds.
         """
         if u_idx == v_idx: return False
         
@@ -128,7 +155,13 @@ class GenerativeStateMachine:
             elif actual_inc >= 2: bt = 2
             else: bt = 1
 
-        self.mol.add_bond(u_idx, v_idx, bt, bond_dir=bond_dir)
+        self.mol.add_bond(u_idx, v_idx, bt, bond_dir=bond_dir,
+                          hapticity=hapticity, bond_class=bond_class)
+        
+        # Track "Vak Order" for chirality resolution
+        self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
+        self.mol.atoms[v_idx]._initial_nbrs.append(u_idx)
+        
         self.valence_used[u_idx] += actual_inc
         self.valence_used[v_idx] += actual_inc
         return True
@@ -209,11 +242,37 @@ class GenerativeStateMachine:
                     curr = p
                     if curr == target_idx: break
                     # Safety break
-                    if len(self.parents) < 1: break # Should not happen
+
+    def finalize_valences(self):
+        """
+        Sandhi Finalization: Calculates remaining valences and fills them with
+        implicit Hydrogens (Lopa). This permits bare symbols in output.
+        """
+        for i, atom in enumerate(self.mol.atoms):
+            # Only fill for atoms that don't have explicit H specifying
+            # and are in the organic subset.
+            if self.is_bracket.get(i, False):
+                continue
+            
+            symbol = atom.symbol
+            if symbol not in DEFAULT_VALENCE:
+                continue
+                
+            max_v = DEFAULT_VALENCE[symbol]
+            used = self.valence_used.get(i, 0)
+            
+            # If used < max, fill the rest with implicit H
+            if used < max_v:
+                atom.implicit_hs = int(max_v - used)
+                self.valence_used[i] = max_v
 
     def _get_max_valence(self, atom_idx: int) -> int:
         atom = self.mol.atoms[atom_idx]
         symbol = atom.symbol
+        
+        # Transition metals bypass strict valence guards
+        if symbol in TRANSITION_METALS:
+            return TRANSITION_METAL_MAX_VALENCE
         
         # If in brackets, allow hypervalency
         if self.is_bracket.get(atom_idx, False):

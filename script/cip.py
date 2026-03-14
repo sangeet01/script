@@ -3,7 +3,7 @@ CIP Priority Engine (RDKit-Free)
 Implements Cahn-Ingold-Prelog priority rules for stereochemistry.
 """
 
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, Optional
 
 
 def compute_cip_priorities(mol, atom_idx: int) -> List[int]:
@@ -26,15 +26,20 @@ def compute_cip_priorities(mol, atom_idx: int) -> List[int]:
         return neighbors
     
     # Build priority tuples for each neighbor
+    from .ranking import calculate_ranks
+    rank_map = calculate_ranks(mol)
+    
     priorities = []
     for nbr_idx in neighbors:
         priority = _compute_priority_tuple(mol, nbr_idx, atom_idx, depth=5)
-        priorities.append((priority, nbr_idx))
+        # Use rank for tie-breaking if indices differ
+        rank = rank_map.get(nbr_idx, 999999) if nbr_idx != -1 else 1000000
+        priorities.append((priority, rank, nbr_idx))
     
-    # Sort by priority (descending), then by index for stability
-    priorities.sort(key=lambda x: (x[0], -x[1] if x[1] != -1 else 999999), reverse=True)
+    # Sort by priority (descending), then rank (descending)
+    priorities.sort(key=lambda x: (x[0], x[1]), reverse=True)
     
-    return [idx for _, idx in priorities]
+    return [idx for _, _, idx in priorities]
 
 
 def _compute_priority_tuple(mol, atom_idx: int, parent_idx: int, 
@@ -103,19 +108,30 @@ def _get_bond_order(bond_type) -> int:
     return bond_map.get(bond_type, 1)
 
 
-def permutation_parity(order_a: List[int], order_b: List[int]) -> int:
+def permutation_parity(order_a: List[int], order_b: List[int], ranks: Optional[Dict[int, int]] = None) -> int:
     """
     Compute parity of permutation from order_a to order_b.
     Returns 0 (even) or 1 (odd).
+    
+    If ranks is provided, values are treated as indices and mapped to ranks 
+    for stable comparison across different graphs of the same molecule.
     """
     if len(order_a) != len(order_b):
         return 0
     
-    # Build mapping: order_a[i] -> position in order_b
-    pos_map = {val: i for i, val in enumerate(order_b)}
+    def get_val(x):
+        if ranks is None: return x
+        if x == -1: return 1000000 # H always last/lowest priority in rank space
+        return ranks.get(x, x)
+
+    val_a = [get_val(x) for x in order_a]
+    val_b = [get_val(x) for x in order_b]
+    
+    # Build mapping: val_a[i] -> position in val_b
+    pos_map = {val: i for i, val in enumerate(val_b)}
     
     try:
-        perm = [pos_map[val] for val in order_a]
+        perm = [pos_map[val] for val in val_a]
     except KeyError:
         return 0
     
