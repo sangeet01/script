@@ -260,6 +260,7 @@ script-notation/
 ├── examples/
 │   ├── basic_usage.py
 │   └── rdkit_demo.py
+├── grammar.md                 # Grammar in plain term
 ├── benchmark.py               # 100-compound RDKit round-trip validation
 ├── test_v3.py                 # V3 materials test suite (22 cases)
 └── LICENSE                    # MIT + Commons Clause
