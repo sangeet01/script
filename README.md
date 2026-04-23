@@ -2,7 +2,7 @@
 # SCRIPT: Structural Chemical Representation In Plain Text
 
 <p align="center">
-  <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" >
+  <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" width="100%">
 </p>
 
 **SCRIPT** is a deterministic, sovereign molecular notation system and RDKit-independent cheminformatics engine. Built on a Paninian linguistic model, SCRIPT provides a "one true string" for every molecule, reaction, material, and quantum state with 100% native round-trip consistency.
@@ -21,7 +21,7 @@ SMILES has served chemistry for 35 years, but its limitations are critical for m
 
 SCRIPT addresses all of these systematically:
 
-| Problem | SMILES | SCRIPT    |
+| Problem | SMILES | SCRIPT V3 |
 |---------|--------|-----------|
 | Canonicalization | Multiple valid strings | Path-invariant DFS traversal |
 | Ring notation | Global labels `C1...C1` | Topological `&N:` (invariant size) |
@@ -142,10 +142,10 @@ python test_v3.py
 
 ```bash
 # Core engine (RDKit-free)
-pip install lark
+pip install linearscript
 
 # With RDKit bridge for interop
-pip install rdkit
+pip install linearscript[rdkit]
 ```
 
 ---
@@ -233,7 +233,7 @@ inchi = Chem.MolToInchi(mol_back)
 ## Project Structure
 
 ```
-script-notation/
+script/
 ├── script/                    # Core engine (RDKit-free)
 │   ├── mol.py                 # CoreAtom / CoreBond / CoreMolecule (V3 fields)
 │   ├── parser.py              # Lark-based SCRIPT parser (V3 interpreter)
@@ -260,7 +260,6 @@ script-notation/
 ├── examples/
 │   ├── basic_usage.py
 │   └── rdkit_demo.py
-├── grammar.md                 # Grammar in plain term
 ├── benchmark.py               # 100-compound RDKit round-trip validation
 ├── test_v3.py                 # V3 materials test suite (22 cases)
 └── LICENSE                    # MIT + Commons Clause
@@ -332,6 +331,9 @@ Developed by **Sangeet Sharma** and the SCRIPT team.
 - GitHub Issues: [sangeet01/script/issues](https://github.com/sangeet01/script/issues)
 - Documentation: See `docs/` directory
 
+---
+
+*"A linear script to unfold molecular complexity — from the singlet to the surface."*
 
 ---
 
