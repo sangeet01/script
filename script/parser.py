@@ -12,7 +12,7 @@ from .peptide import PeptideHandler
 from .local_rings import LocalRingHandler
 from .validator import SCRIPTValidator
 from .chiral import ChiralResolver
-from .mol import CoreMolecule
+from .mol import CoreMolecule, Reaction
 
 
 from .state_machine import GenerativeStateMachine
@@ -37,76 +37,100 @@ class SCRIPTInterpreter(Interpreter):
     def macroscopic_structure(self, tree):
         context = None
         entities = []
-        
+        phase_labels = []  # labels between VBAR tokens
+
         for child in tree.children:
             if isinstance(child, Token):
-                # CONTEXT_LABEL token or VBAR token - skip VBAR
+                if child.type == 'VBAR':
+                    phase_labels.append('|')
                 continue
             if not isinstance(child, Tree): continue
             t = child.data.lstrip('!')
             if t == 'macroscopic_context':
-                # Scan all token values inside the context node
                 for tok in child.children:
                     if isinstance(tok, Token) and tok.type == 'CONTEXT_LABEL':
                         context = str(tok)
                         break
                     elif isinstance(tok, Token):
-                        # grammar patched with ! renames it - just grab first non-bracket token
                         val = str(tok)
                         if val not in ('[[', ']]'):
                             context = val
                             break
             elif t in ('reaction', 'script'):
                 mols = self.visit(child)
-                def apply_context(obj):
+                def apply_context(obj, ctx=context):
                     if isinstance(obj, list):
-                        for item in obj: apply_context(item)
+                        for item in obj: apply_context(item, ctx)
                     elif isinstance(obj, CoreMolecule):
-                        obj.macroscopic_context = context
-                
+                        obj.macroscopic_context = ctx
                 apply_context(mols)
+
+                # Tag phase boundary: each entity after the first gets a label
+                phase_idx = len(entities)
+                if phase_idx > 0 and phase_labels:
+                    def apply_phase(obj, label='|'):
+                        if isinstance(obj, list):
+                            for item in obj: apply_phase(item, label)
+                        elif isinstance(obj, CoreMolecule):
+                            obj.phase_boundary = label
+                    apply_phase(mols)
+
                 entities.append(mols)
-        
+
         if len(entities) == 1:
             return entities[0]
         return entities if entities else None
 
-    def reaction(self, tree):
-        # Reactions return a list of "sides", each side is a list of molecules (scripts)
-        sides = []
-        for child in tree.children:
-            if isinstance(child, Tree) and child.data.lstrip('!') == 'script':
-                # We DON'T reset state here because script() itself will 
-                # manage states for its components.
-                res = self.visit(child)
-                if isinstance(res, CoreMolecule):
-                    sides.append([res])
-                else:
-                    sides.append(res)
-        return sides
-
     def script(self, tree):
-        # Visit children and collect components
+        # Visit children and collect components, preserving separator semantics
         molecules = []
+        separators = []  # separator token between each pair of components
+
         for child in tree.children:
-            if isinstance(child, Tree) and child.data.lstrip('!') == 'component':
-                # Each component starts fresh if it's separated by "." or "~"
-                # but wait, the first component also needs a fresh state 
-                # relative to whatever was in self.state before.
+            if not isinstance(child, Tree):
+                continue
+            data = child.data.lstrip('!')
+            if data == 'component':
                 self.state = GenerativeStateMachine()
                 self.visit(child)
                 self.state.finalize_valences()
-                molecules.append(self.state.mol)
-        
+                mol = self.state.mol
+                # Apply pending separator from the preceding fragment_separator
+                if separators:
+                    mol.fragment_separator = separators[-1]
+                molecules.append(mol)
+            elif data == 'fragment_separator':
+                # Capture the actual token: '.' = solvate, '~' = ionic pair
+                sep_tokens = list(child.scan_values(lambda t: True))
+                sep = str(sep_tokens[0]) if sep_tokens else '.'
+                separators.append(sep)
+
         if len(molecules) == 1:
             return molecules[0]
-        
         return molecules
 
-    def fragment_separator(self, tree):
-        # We don't do anything here, handled in script() loop above
-        # for proper state management between components.
-        pass
+    def reaction(self, tree):
+        """Return a Reaction object instead of a raw list-of-lists."""
+        from .mol import Reaction
+        sides = []
+        for child in tree.children:
+            if isinstance(child, Tree) and child.data.lstrip('!') == 'script':
+                res = self.visit(child)
+                if isinstance(res, list):
+                    sides.append(res)
+                elif res is not None:
+                    sides.append([res])
+                else:
+                    sides.append([])
+        # SCRIPT supports: reactants >> products  (2 sides)
+        #              or: reactants > agents > products  (3 sides, middle = agents)
+        if len(sides) == 2:
+            return Reaction(reactants=sides[0], products=sides[1])
+        elif len(sides) == 3:
+            return Reaction(reactants=sides[0], agents=sides[1], products=sides[2])
+        elif len(sides) == 1:
+            return Reaction(reactants=sides[0], products=[])
+        return Reaction(reactants=[], products=[])
 
     def molecular_chain(self, tree):
         for child in tree.children:
@@ -130,19 +154,34 @@ class SCRIPTInterpreter(Interpreter):
                     self.state.open_branch()
                     self.visit(child)
                     self.state.close_branch()
-            elif data == 'peptide_chain':
-                ph = PeptideHandler(self.state)
-                ph.handle(child)
             elif data == 'polymer':
-                self.visit_children(child)
+                # Visit polymer_unit to build the molecular graph,
+                # then extract repeat_count from polymer_suffix if present
+                for sub in child.children:
+                    if not isinstance(sub, Tree): continue
+                    sub_data = sub.data.lstrip('!')
+                    if sub_data == 'polymer_unit':
+                        self.visit_children(sub)
+                    elif sub_data == 'polymer_suffix':
+                        self._parse_polymer_suffix(sub)
             elif data == 'polymer_block':
-                # Polymer blocks restart components or just continue?
-                # User example: [ {PEG} ]<n:50-60> -b- [ {Styrene} ]<n:100>
-                # We can treat each block as a component with a special multiplier
-                mol_data = self.visit(child.children[0]) # (molecular_chain | peptide_chain | script)
-                # multiplier is in child.children[1] or missing
-                # For now just collect it.
-                pass
+                pass  # block copolymer junction — not yet implemented
+
+    def peptide_chain(self, tree):
+        """Handle peptide_chain whether as direct component or inside molecular_chain."""
+        ph = PeptideHandler(self.state)
+        ph.handle(tree)
+
+    def polymer(self, tree):
+        """Handle top-level polymer node (direct child of component)."""
+        from lark import Tree as LTree, Token as LToken
+        for child in tree.children:
+            if not isinstance(child, LTree): continue
+            sub = child.data.lstrip('!')
+            if sub == 'polymer_unit':
+                self.visit_children(child)
+            elif sub == 'polymer_suffix':
+                self._parse_polymer_suffix(child)
 
     def branch_content(self, tree):
         self.visit_children(tree)
@@ -177,7 +216,7 @@ class SCRIPTInterpreter(Interpreter):
         if t_type == 'DOUBLE_BOND': order = 2
         elif t_type == 'TRIPLE_BOND': order = 3
         elif t_type == 'AROMATIC_BOND': order = 4
-        elif t_type == 'EXPLICIT_MOBILE': order = 4
+        elif t_type == 'EXPLICIT_MOBILE': order = 1; bond_class = 'tautomeric'
         elif t_type == 'UP_BOND': direction = 3
         elif t_type == 'DOWN_BOND': direction = 4
         elif t_type == 'COORDINATE_BOND': order = 1; bond_class = "coordinate"
@@ -213,7 +252,16 @@ class SCRIPTInterpreter(Interpreter):
                     self._handle_dhatu(atom_node)
             else:
                 symbol = str(atom_node)
-                self.state.add_atom(symbol, bond_order=self._next_bond_order, bond_dir=self._next_bond_dir)
+                is_wildcard = (atom_node.type == 'WILDCARD' or symbol == '*')
+                self.state.add_atom(
+                    symbol,
+                    bond_order=self._next_bond_order,
+                    bond_dir=self._next_bond_dir,
+                    bond_class=self._next_bond_class,
+                )
+                if is_wildcard:
+                    self.state.mol.atoms[-1].is_wildcard = True
+                    self.state.mol.atoms[-1].atomic_num = 0
             
             self._next_bond_order = -1
             self._next_bond_dir = 0
@@ -227,27 +275,116 @@ class SCRIPTInterpreter(Interpreter):
         hcount = None
         charge = 0
         mapping = 0
-        
+        radical = 0
+        is_wildcard = False
+        is_query = False
+        query_data = {}
+
+        # Detect [*] form
         for child in node.children:
-            if not isinstance(child, Tree): continue
-            t = child.data.lstrip('!')
-            
-            val = "".join([str(leaf) for leaf in child.scan_values(lambda x: not isinstance(x, Tree))])
-            
-            if t == 'element': element = val
-            elif t == 'isotope': isotope = int(val) if val else 0
-            elif t == 'chiral': chiral = val
-            elif t == 'hcount': hcount = self._parse_hcount(val)
-            elif t == 'charge': charge = self._parse_charge(val)
-            elif t == 'ring_class': 
-                # :INT, extract digits
-                mapping = int("".join(filter(str.isdigit, val)))
-            
-        self.state.add_atom(element, charge=charge, isotope=isotope, 
+            if isinstance(child, Token) and str(child) == '*':
+                is_wildcard = True
+                element = '*'
+                break
+
+        # Detect [query_atom] form
+        if not is_wildcard:
+            for child in node.children:
+                if isinstance(child, Tree) and child.data.lstrip('!') == 'query_atom':
+                    is_query = True
+                    query_data = self._parse_query_atom(child)
+                    element = query_data.get('symbol', '*')
+                    break
+
+        if not is_wildcard and not is_query:
+            for child in node.children:
+                if not isinstance(child, Tree): continue
+                t = child.data.lstrip('!')
+                val = "".join([str(leaf) for leaf in child.scan_values(lambda x: not isinstance(x, Tree))])
+                if t == 'element': element = val
+                elif t == 'isotope': isotope = int(val) if val else 0
+                elif t == 'chiral': chiral = val
+                elif t == 'hcount': hcount = self._parse_hcount(val)
+                elif t == 'charge': charge = self._parse_charge(val)
+                elif t == 'radical':
+                    radical = len([c for c in val if c == '.'])
+                elif t == 'ring_class':
+                    mapping = int("".join(filter(str.isdigit, val)))
+
+        self.state.add_atom(element, charge=charge, isotope=isotope,
                             hcount=hcount, chiral=chiral,
                             bond_order=self._next_bond_order,
                             bond_dir=self._next_bond_dir,
-                            is_bracket=True, mapping=mapping)
+                            bond_class=self._next_bond_class,
+                            is_bracket=True, mapping=mapping,
+                            radical=radical)
+        atom = self.state.mol.atoms[-1]
+        if is_wildcard:
+            atom.is_wildcard = True
+            atom.atomic_num = 0
+        if is_query:
+            atom.is_query = True
+            atom.is_wildcard = True  # query atoms are wildcards in canonical sense
+            atom.atomic_num = 0
+            for k, v in query_data.items():
+                if hasattr(atom, k):
+                    setattr(atom, k, v)
+
+    def _parse_query_atom(self, query_tree) -> dict:
+        """Parse a query_atom tree into a dict of query fields for CoreAtom."""
+        result = {'symbol': '*', 'query_atomic_nums': [], 'query_not': False,
+                  'query_ring': None, 'query_valence': None,
+                  'query_hcount': None, 'query_aromatic': None,
+                  'query_primitives': []}
+        self._parse_query_primitives(query_tree, result)
+        # If only one atomic number, use it as the symbol
+        if len(result['query_atomic_nums']) == 1:
+            from rdkit.Chem import GetPeriodicTable
+            try:
+                pt = GetPeriodicTable()
+                result['symbol'] = pt.GetElementSymbol(result['query_atomic_nums'][0])
+            except Exception:
+                result['symbol'] = '*'
+        return result
+
+    def _parse_query_primitives(self, tree, result: dict):
+        """Recursively extract query primitives."""
+        for child in tree.children:
+            if not isinstance(child, Tree): continue
+            t = child.data.lstrip('!')
+            if t == 'query_primitive':
+                tokens = list(child.scan_values(lambda x: True))
+                if not tokens: continue
+                first = str(tokens[0])
+                vals = [str(t) for t in tokens]
+                if first == '!':
+                    result['query_not'] = True
+                    # Recurse into negated primitive
+                    self._parse_query_primitives(child, result)
+                elif first == '#':
+                    if len(vals) > 1:
+                        try: result['query_atomic_nums'].append(int(vals[1]))
+                        except ValueError: pass
+                elif first == 'R':
+                    result['query_ring'] = int(vals[1]) if len(vals) > 1 else 0
+                elif first == 'r':
+                    result['query_ring'] = int(vals[1]) if len(vals) > 1 else 0
+                elif first == 'v':
+                    if len(vals) > 1:
+                        try: result['query_valence'] = int(vals[1])
+                        except ValueError: pass
+                elif first == 'H':
+                    result['query_hcount'] = int(vals[1]) if len(vals) > 1 else 1
+                elif first == 'a':
+                    result['query_aromatic'] = True
+                elif first == 'A':
+                    result['query_aromatic'] = False
+                else:
+                    # Could be an element symbol
+                    result['symbol'] = first
+                result['query_primitives'].append({'type': first, 'vals': vals})
+            elif t in ('query_atom', 'query_primitive'):
+                self._parse_query_primitives(child, result)
 
     def _handle_dhatu(self, node):
         element = "C"
@@ -297,9 +434,32 @@ class SCRIPTInterpreter(Interpreter):
                             hcount=hcount, chiral=chiral,
                             bond_order=self._next_bond_order,
                             bond_dir=self._next_bond_dir,
+                            bond_class=self._next_bond_class,
                             is_bracket=has_bracket_attr,
                             mapping=mapping,
                             occupancy=occupancy, spin=spin, is_excited=is_excited)
+
+    def _parse_polymer_suffix(self, suffix_tree) -> None:
+        """Extract repeat count from polymer_suffix and store on current mol."""
+        from lark import Token as LarkToken
+        for child in suffix_tree.children:
+            if not isinstance(child, Tree): continue
+            sub = child.data.lstrip('!')
+            if sub == 'polymer_multiplier':
+                ints = [int(str(t)) for t in child.scan_values(
+                    lambda t: isinstance(t, LarkToken) and t.type == 'INT')]
+                if len(ints) == 1:
+                    self.state.mol.repeat_count = ints[0]
+                elif len(ints) == 2:
+                    self.state.mol.repeat_count = (ints[0], ints[1])
+            elif sub == 'repeat_spec':
+                # bare 'n' = unspecified repeat, or INT for exact
+                tokens = list(child.scan_values(lambda t: True))
+                val = str(tokens[0]) if tokens else 'n'
+                try:
+                    self.state.mol.repeat_count = int(val)
+                except ValueError:
+                    self.state.mol.repeat_count = 'n'  # symbolic
 
     def _get_multiplier(self, tree) -> int:
         for child in tree.children:
@@ -380,34 +540,95 @@ class SCRIPTParser:
         self.interpreter = SCRIPTInterpreter()
     
     def parse(self, script_string: str) -> Dict[str, Any]:
+        import re as _re
+        from .mol import Reaction, CoreMolecule
+        from .validator import SCRIPTValidator
+
+        # 1. Pre-validation (grounds the probabilistic generator)
+        if not SCRIPTValidator().is_valid(script_string):
+            return {
+                "success": False,
+                "molecule": None,
+                "atoms": [],
+                "bonds": [],
+                "reaction": None,
+                "error": "Invalid SCRIPT syntax (Validator rejection)"
+            }
+
+        # Pre-process 3-part reactions: "R>A>P" (lone > not part of >>)
+        _agent_parts = _re.split(r'(?<!>)>(?!>)', script_string)
+        if len(_agent_parts) == 3:
+            r_str, a_str, p_str = [s.strip() for s in _agent_parts]
+            r_res = self.parse(r_str)
+            a_res = self.parse(a_str) if a_str else {"success": True, "molecule": None, "reaction": None, "error": None}
+            p_res = self.parse(p_str)
+            if r_res["success"] and p_res["success"]:
+                def _to_list(m):
+                    if m is None: return []
+                    return m if isinstance(m, list) else [m]
+                rxn = Reaction(
+                    reactants=_to_list(r_res["molecule"]),
+                    agents=_to_list(a_res.get("molecule")),
+                    products=_to_list(p_res["molecule"]),
+                )
+                return {
+                    "success": True,
+                    "molecule": rxn.reactants + rxn.agents + rxn.products,
+                    "atoms": [], # Reactions don't have a single atom list
+                    "bonds": [],
+                    "reaction": rxn,
+                    "error": None
+                }
+
         try:
+            from .mol import Reaction, CoreMolecule
             tree = self.parser.parse(script_string)
             self.interpreter.state = GenerativeStateMachine()
             self.interpreter._next_bond_order = -1
             self.interpreter._next_bond_dir = 0
-            # SCRIPTInterpreter.visit(tree) will return either a mol or a list of mols
             res = self.interpreter.visit(tree)
-            
-            # Resolve chirality as a post-pass (Paninian Sandhi)
-            # res can be CoreMolecule, List[CoreMolecule] (script), or List[List[CoreMolecule]] (reaction)
+
+            # Resolve chirality post-pass (Paninian Sandhi)
             def resolve_all(obj):
-                if isinstance(obj, list):
+                if isinstance(obj, Reaction):
+                    for mol in obj.reactants + obj.agents + obj.products:
+                        ChiralResolver(mol).resolve()
+                elif isinstance(obj, list):
                     for item in obj: resolve_all(item)
                 elif isinstance(obj, CoreMolecule):
-                    # Valences are finalized during visit() now, but we'll be safe
-                    # Only resolved if not already handled
                     ChiralResolver(obj).resolve()
 
             resolve_all(res)
 
+            # If result is a Reaction, expose it in both 'molecule' and 'reaction' keys
+            if isinstance(res, Reaction):
+                return {
+                    "success": True,
+                    "molecule": res.reactants + res.agents + res.products,
+                    "atoms": [],
+                    "bonds": [],
+                    "reaction": res,
+                    "error": None
+                }
+
             return {
                 "success": True,
-                "molecule": res, # Can be CoreMolecule or List[CoreMolecule]
+                "molecule": res,  # CoreMolecule or List[CoreMolecule]
+                "atoms": res.atoms if isinstance(res, CoreMolecule) else [],
+                "bonds": res.bonds if isinstance(res, CoreMolecule) else [],
+                "reaction": None,
                 "error": None
             }
         except Exception as e:
             return {
                 "success": False,
                 "molecule": None,
+                "reaction": None,
                 "error": str(e)
             }
+
+
+def parse_script(script_string: str):
+    """Parse SCRIPT string to internal representation"""
+    parser = SCRIPTParser()
+    return parser.parse(script_string)

@@ -1,5 +1,5 @@
 from typing import List, Dict, Optional, Tuple
-from .mol import CoreMolecule
+from .mol import CoreMolecule, BondType, StereoType
 from .ranking import calculate_ranks
 from .stereo import get_chiral_symbol, perceive_chirality
 
@@ -26,14 +26,60 @@ class SCRIPTCanonicalizer:
         if not mol.atoms:
             return None
 
+        # Find all connected components (handles salts, multi-fragment molecules)
+        components = self._find_components(mol)
+
+        if len(components) == 1:
+            return self._canonicalize_component(mol, list(range(len(mol.atoms))))
+        
+        # Canonicalize each component independently, sort for determinism
+        fragment_strings = []
+        for component in components:
+            s = self._canonicalize_component(mol, component)
+            if s:
+                fragment_strings.append(s)
+        
+        # Strip trailing aliphatic anubandha '.' from each fragment before joining.
+        # The grammar now accepts &N without trailing '.', so this is safe.
+        # Aromatic anubandha ':' is never at end of a fragment so no need to strip it.
+        fragment_strings = [s.rstrip('.') for s in fragment_strings]
+
+        # Sort fragments canonically (largest first, then lexicographic)
+        fragment_strings.sort(key=lambda s: (-len(s), s))
+        return '.'.join(fragment_strings)
+
+    def _find_components(self, mol: CoreMolecule) -> List[List[int]]:
+        """Find all connected components via BFS."""
+        num_atoms = len(mol.atoms)
+        visited = set()
+        components = []
+        for start in range(num_atoms):
+            if start in visited:
+                continue
+            component = []
+            queue = [start]
+            visited.add(start)
+            while queue:
+                node = queue.pop(0)
+                component.append(node)
+                for nbr, _ in mol.adj.get(node, []):
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        queue.append(nbr)
+            components.append(component)
+        return components
+
+    def _canonicalize_component(self, mol: CoreMolecule, atom_indices: List[int]) -> Optional[str]:
+        """Canonicalize a single connected component."""
         # 1. Ranking (Universal)
         rank_map = calculate_ranks(mol)
         num_atoms = len(mol.atoms)
         ranks = [rank_map.get(i, 0) for i in range(num_atoms)]
         
-        # 2. DFS from lowest rank atom
-        start_indices = [i for i, r in enumerate(ranks) if r == 0]
-        start_atom = start_indices[0] if start_indices else 0
+        # 2. DFS from lowest rank atom within this component
+        component_set = set(atom_indices)
+        start_candidates = [(ranks[i], i) for i in atom_indices if ranks[i] == min(ranks[j] for j in atom_indices)]
+        start_atom = start_candidates[0][1] if start_candidates else atom_indices[0]
         
         # First pass: identify ring bonds
         visited = set()
@@ -52,8 +98,8 @@ class SCRIPTCanonicalizer:
         
         # 4. Build canonical string
         atom_to_id = {}
-        depths = {start_atom: 1} # Depth starts at 1
-        ring_counter = [0] # Ring counter for V2
+        depths = {start_atom: 1}
+        ring_counter = [0]
         
         result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
         
@@ -153,8 +199,8 @@ class SCRIPTCanonicalizer:
                     if atom_to_id[nbr_idx] < atom_string_id:
                         # Topological distance is the difference in depths
                         topo_size = curr_depth - depths.get(nbr_idx, 1) + 1
-                        is_arom = mol.bonds[bond_idx].bond_type == 4
-                        anubandha = ":" if is_arom else "."
+                        is_arom = mol.bonds[bond_idx].bond_type == BondType.AROMATIC
+                        anubandha = ":" if is_arom else "-"
                         bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol)
                         if is_arom: bond_sym = "" # redundant for &6:
                         ring_closures.append((topo_size, f"{bond_sym}&{topo_size}{anubandha}", nbr_idx))
@@ -218,9 +264,27 @@ class SCRIPTCanonicalizer:
 
     def _atom_string(self, atom, atom_idx, mol, ranks, ordered_neighbors):
         symbol = atom.symbol
+
+        # Wildcard atom — emit bare '*', no brackets needed
+        if getattr(atom, 'is_wildcard', False) or atom.atomic_num == 0:
+            return '*'
+
+        # Determine chiral symbol based on stereo_type
+        stereo_t = getattr(atom, 'stereo_type', StereoType.NONE)
         chiral_sym = ""
-        if len(ordered_neighbors) == 4:
-            chiral_sym = get_chiral_symbol(atom_idx, ordered_neighbors, mol, ranks)
+        if stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL):
+            if len(ordered_neighbors) == 4:
+                chiral_sym = get_chiral_symbol(atom_idx, ordered_neighbors, mol, ranks)
+        elif stereo_t == StereoType.SQUARE_PLANAR:
+            chiral_sym = "@SP"
+        elif stereo_t == StereoType.OCTAHEDRAL:
+            chiral_sym = "@OH"
+        elif stereo_t == StereoType.ATROPISOMER:
+            chiral_sym = "@AX"
+        elif stereo_t == StereoType.TRIG_BIPYRAMIDAL:
+            chiral_sym = "@TB"
+        elif stereo_t == StereoType.PYRAMIDAL:
+            chiral_sym = "@PY"
 
         if (symbol in ORGANIC_SUBSET
                 and atom.formal_charge == 0
@@ -228,6 +292,8 @@ class SCRIPTCanonicalizer:
                 and atom.radical_electrons == 0
                 and chiral_sym == ""
                 and (not hasattr(atom, 'mapping') or atom.mapping == 0)
+                and getattr(atom, 'spin', 0) == 0
+                and not getattr(atom, 'is_excited', False)
                 and self._has_default_valence(atom, mol, atom_idx)):
             return symbol
 
@@ -235,7 +301,7 @@ class SCRIPTCanonicalizer:
         if atom.isotope > 0:
             parts.append(str(atom.isotope))
         parts.append(symbol)
-        
+
         if chiral_sym:
             parts.append(chiral_sym)
 
@@ -244,29 +310,37 @@ class SCRIPTCanonicalizer:
             parts.append('H')
             if ihs > 1:
                 parts.append(str(ihs))
-        
+
         if atom.formal_charge > 0:
             parts.append('+' + (str(atom.formal_charge) if atom.formal_charge > 1 else ''))
         elif atom.formal_charge < 0:
             parts.append('-' + (str(abs(atom.formal_charge)) if atom.formal_charge < -1 else ''))
-            
+
         if getattr(atom, 'mapping', 0) > 0:
             parts.append(f':{atom.mapping}')
-            
+
         parts.append(']')
         return "".join(parts)
 
     def _bond_symbol(self, bond, to_atom_idx, mol):
         bt = bond.bond_type
+        # Typed bonds
+        if bt == BondType.DOUBLE:     return '='
+        if bt == BondType.TRIPLE:     return '#'
+        if bt == BondType.AROMATIC:   return ':'
+        if bt == BondType.DATIVE:     return '->'
+        if bt == BondType.REV_DATIVE: return '<-'
+        if bt == BondType.TAUTOMERIC: return '=:'
+        if bt == BondType.COORDINATE: return '>'
+        if bt == BondType.STAR:       return '*'
+        # Legacy int fallback
         if bt == 2: return '='
         if bt == 3: return '#'
-        if bt == 4: 
-            return ':'
-        
+        if bt == 4: return ':'
+
         if bond.bond_dir != 0:
             is_reverse = (bond.end_atom_idx == to_atom_idx)
-            # BEGINWEDGE (1) / BEGINDASH (2) / ENDDOWNRIGHT (3) / ENDUPRIGHT (4)
-            if bond.bond_dir in (1, 3): 
+            if bond.bond_dir in (1, 3):
                 return '\\' if is_reverse else '/'
             elif bond.bond_dir in (2, 4):
                 return '/' if is_reverse else '\\'
@@ -274,17 +348,21 @@ class SCRIPTCanonicalizer:
 
     def _has_default_valence(self, atom, mol, atom_idx):
         if atom.symbol not in DEFAULT_VALENCE: return False
-        
-        # Calculate TOTAL valence (bonds + implicit H)
+
         valence = getattr(atom, 'implicit_hs', 0) or 0
         for nbr_idx, bond_idx in mol.adj.get(atom_idx, []):
             bond = mol.bonds[bond_idx]
             bt = bond.bond_type
-            if bt == 2: valence += 2
-            elif bt == 3: valence += 3
-            elif bt == 4: valence += 1.5
-            else: valence += 1
-            
+            if bt in (BondType.DOUBLE, 2):     valence += 2
+            elif bt in (BondType.TRIPLE, 3):   valence += 3
+            elif bt in (BondType.AROMATIC, 4): valence += 1.5
+            elif bt in (BondType.DATIVE, BondType.REV_DATIVE,
+                        BondType.COORDINATE, BondType.TAUTOMERIC,
+                        BondType.STAR, 5, 6, 7, 8, 9):
+                valence += 1
+            else:
+                valence += 1
+
         return abs(valence - DEFAULT_VALENCE[atom.symbol]) < 0.1
 
 def canonicalize_mol(mol):

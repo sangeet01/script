@@ -5,7 +5,7 @@ to ensure every SCRIPT string produces a physically valid molecule.
 """
 
 from typing import List, Dict, Tuple, Optional, Any
-from .mol import CoreMolecule, CoreAtom, CoreBond
+from .mol import CoreMolecule, CoreAtom, CoreBond, BondType, StereoType
 
 # Standard valences for organic atoms (Kekule form)
 DEFAULT_VALENCE = {
@@ -53,19 +53,42 @@ class GenerativeStateMachine:
                  bond_order: int = 1, bond_dir: int = 0,
                  is_bracket: bool = False, is_aromatic: bool = False,
                  mapping: int = 0, occupancy: float = 1.0, 
-                 spin: int = 0, is_excited: bool = False) -> int:
+                 spin: int = 0, is_excited: bool = False,
+                 bond_class: str = "", radical: int = 0) -> int:
         """Add an atom and move the state pointer to it."""
-        atomic_num = self._get_atomic_num(symbol)
-        atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge, 
-                        isotope=isotope, symbol=symbol, 
+        is_wildcard = (symbol == '*')
+        atomic_num = 0 if is_wildcard else self._get_atomic_num(symbol)
+        atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge,
+                        isotope=isotope, symbol=symbol,
                         is_aromatic=is_aromatic, mapping=mapping,
-                        occupancy=occupancy, spin=spin, is_excited=is_excited)
+                        occupancy=occupancy, spin=spin, is_excited=is_excited,
+                        is_wildcard=is_wildcard)
         
         atom.implicit_hs = hcount if hcount is not None else 0
+        atom.radical_electrons = radical
         if chiral:
-            # RDKit convention: CHI_TETRAHEDRAL_CW=1 (@@), CHI_TETRAHEDRAL_CCW=2 (@)
-            tag = 2 if chiral == "@" else 1 if chiral == "@@" else 0
-            atom._initial_tag = tag
+            # Tetrahedral: CHI_TETRAHEDRAL_CW=1 (@@), CHI_TETRAHEDRAL_CCW=2 (@)
+            if chiral == '@':
+                atom._initial_tag = 2
+                atom.stereo_type = StereoType.TETRAHEDRAL
+            elif chiral == '@@':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TETRAHEDRAL
+            elif chiral == '@SP':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.SQUARE_PLANAR
+            elif chiral == '@OH':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.OCTAHEDRAL
+            elif chiral == '@AX':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.ATROPISOMER
+            elif chiral == '@TB':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TRIG_BIPYRAMIDAL
+            elif chiral == '@PY':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.PYRAMIDAL
             
         atom_idx = len(self.mol.atoms)
         self.mol.add_atom(atom)
@@ -79,7 +102,8 @@ class GenerativeStateMachine:
         
         # If there's a current atom, we implicitly create a bond
         if self.current_atom_idx is not None:
-            self.add_bond(self.current_atom_idx, atom_idx, bond_order, bond_dir=bond_dir)
+            self.add_bond(self.current_atom_idx, atom_idx, bond_order,
+                          bond_dir=bond_dir, bond_class=bond_class)
             self.parents[atom_idx] = self.current_atom_idx
             
         self.current_atom_idx = atom_idx
@@ -89,9 +113,32 @@ class GenerativeStateMachine:
                  hapticity: int = 0, bond_class: str = "") -> bool:
         """
         Add or upgrade a bond between u and v with 'Sandhi' valence guards.
-        Stores hapticity and bond_class for organometallic bonds.
+        bond_class maps to BondType for semantically-typed bonds.
         """
         if u_idx == v_idx: return False
+
+        # Map bond_class to BondType — these carry semantic meaning beyond order
+        _class_to_type = {
+            'dative':     BondType.DATIVE,
+            'rev_dative': BondType.REV_DATIVE,
+            'coordinate': BondType.COORDINATE,
+            'star':       BondType.STAR,
+            'tautomeric': BondType.TAUTOMERIC,
+        }
+        # For dative/coordinate/special bonds: bypass Sandhi valence guard
+        # (metal centres and donor-acceptor pairs have variable valence)
+        if bond_class in _class_to_type:
+            special_type = _class_to_type[bond_class]
+            # Check not already bonded
+            if self.mol.get_bond(u_idx, v_idx) is None:
+                self.mol.add_bond(u_idx, v_idx, special_type, bond_dir=bond_dir,
+                                  hapticity=hapticity, bond_class=bond_class)
+                self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
+                self.mol.atoms[v_idx]._initial_nbrs.append(u_idx)
+                # Dative counts as 1 for valence tracking
+                self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 1
+                self.valence_used[v_idx] = self.valence_used.get(v_idx, 0) + 1
+            return True
         
         # Resolve implicit bond (-1)
         if order == -1:
@@ -142,6 +189,20 @@ class GenerativeStateMachine:
             
         avail_u = max_u - self.valence_used[u_idx]
         avail_v = max_v - self.valence_used[v_idx]
+        
+        # When adding a non-aromatic bond to an aromatic atom, the 1.5-per-aromatic-bond
+        # counting may over-restrict availability (e.g. N with 2 aromatic bonds = 3.0 used,
+        # hitting its valence cap of 3, leaving no room for a substituent like cyclopropyl).
+        # For non-aromatic bond requests, recalculate availability using integer aromatic counts.
+        if not is_arom_request:
+            def integer_valence_used(atom_idx):
+                total = 0
+                for bond in self.mol.bonds:
+                    if bond.begin_atom_idx == atom_idx or bond.end_atom_idx == atom_idx:
+                        total += 1 if bond.bond_type == 4 else bond.bond_type
+                return total
+            avail_u = max_u - integer_valence_used(u_idx)
+            avail_v = max_v - integer_valence_used(v_idx)
         
         if is_arom_request:
             actual_inc = v_inc
@@ -274,11 +335,24 @@ class GenerativeStateMachine:
         if symbol in TRANSITION_METALS:
             return TRANSITION_METAL_MAX_VALENCE
         
+        base = DEFAULT_VALENCE.get(symbol, 4)
+        
+        # Formal charge shifts available valence:
+        # [N+] has valence 4, [N-] has valence 2, [O+] has valence 3, etc.
+        charge = getattr(atom, 'formal_charge', 0)
+        if charge != 0:
+            charged_val = base + charge
+            # If in brackets, also allow hypervalency on top of charge
+            if self.is_bracket.get(atom_idx, False):
+                hyper = HYPERVALENT_MAX.get(symbol, base)
+                return max(charged_val, hyper)
+            return max(charged_val, 1)
+        
         # If in brackets, allow hypervalency
         if self.is_bracket.get(atom_idx, False):
-            return HYPERVALENT_MAX.get(symbol, DEFAULT_VALENCE.get(symbol, 4))
+            return HYPERVALENT_MAX.get(symbol, base)
         
-        return DEFAULT_VALENCE.get(symbol, 4)
+        return base
 
     def _get_atomic_num(self, symbol: str) -> int:
         periodic_table = {

@@ -1,153 +1,224 @@
 """
-SCRIPT Peptide Handler - Handle {A.G.S...} macro mode
+SCRIPT Biopolymer Handler
+Handles peptide {A.G.S} and nucleic acid {A.G.C.T} macro notation.
+Translates monomer codes into CoreMolecule atoms via the GenerativeStateMachine.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
+from lark import Tree, Token
 
-# Standard amino acid codes to SMILES mapping
-AMINO_ACID_SMILES = {
-    'A': 'N[C@@H](C)C(=O)O',           # Alanine
-    'R': 'N[C@@H](CCCNC(=N)N)C(=O)O', # Arginine
-    'N': 'N[C@@H](CC(=O)N)C(=O)O',    # Asparagine
-    'D': 'N[C@@H](CC(=O)O)C(=O)O',    # Aspartic acid
-    'C': 'N[C@@H](CS)C(=O)O',          # Cysteine
-    'E': 'N[C@@H](CCC(=O)O)C(=O)O',   # Glutamic acid
-    'Q': 'N[C@@H](CCC(=O)N)C(=O)O',   # Glutamine
-    'G': 'NCC(=O)O',                   # Glycine
-    'H': 'N[C@@H](CC1=CNC=N1)C(=O)O', # Histidine
-    'I': 'N[C@@H]([C@@H](C)CC)C(=O)O',# Isoleucine
-    'L': 'N[C@@H](CC(C)C)C(=O)O',     # Leucine
-    'K': 'N[C@@H](CCCCN)C(=O)O',      # Lysine
-    'M': 'N[C@@H](CCSC)C(=O)O',       # Methionine
-    'F': 'N[C@@H](CC1=CC=CC=C1)C(=O)O', # Phenylalanine
-    'P': 'N1[C@@H](CCC1)C(=O)O',      # Proline
-    'S': 'N[C@@H](CO)C(=O)O',         # Serine
-    'T': 'N[C@@H]([C@H](C)O)C(=O)O',  # Threonine
-    'W': 'N[C@@H](CC1=CNC2=CC=CC=C12)C(=O)O', # Tryptophan
-    'Y': 'N[C@@H](CC1=CC=C(O)C=C1)C(=O)O',   # Tyrosine
-    'V': 'N[C@@H](C(C)C)C(=O)O'       # Valine
+
+# ──────────────────────────────────────────────────────────────
+# Amino acid residue SCRIPT notation (internal representations)
+# ──────────────────────────────────────────────────────────────
+AMINO_ACID_SCRIPT: Dict[str, str] = {
+    'A': 'N[C@@H](C)C(=O)O',
+    'R': 'N[C@@H](CCCNC(=N)N)C(=O)O',
+    'N': 'N[C@@H](CC(=O)N)C(=O)O',
+    'D': 'N[C@@H](CC(=O)O)C(=O)O',
+    'C': 'N[C@@H](CS)C(=O)O',
+    'E': 'N[C@@H](CCC(=O)O)C(=O)O',
+    'Q': 'N[C@@H](CCC(=O)N)C(=O)O',
+    'G': 'NCC(=O)O',
+    'H': 'N[C@@H](CC1=CNC=N1)C(=O)O',
+    'I': 'N[C@@H]([C@@H](C)CC)C(=O)O',
+    'L': 'N[C@@H](CC(C)C)C(=O)O',
+    'K': 'N[C@@H](CCCCN)C(=O)O',
+    'M': 'N[C@@H](CCSC)C(=O)O',
+    'F': 'N[C@@H](Cc1ccccc1)C(=O)O',
+    'P': 'N1[C@@H](CCC1)C(=O)O',
+    'S': 'N[C@@H](CO)C(=O)O',
+    'T': 'N[C@@H]([C@H](C)O)C(=O)O',
+    'W': 'N[C@@H](Cc1c[nH]c2ccccc12)C(=O)O',
+    'Y': 'N[C@@H](Cc1ccc(O)cc1)C(=O)O',
+    'V': 'N[C@@H](C(C)C)C(=O)O',
+    # 3-letter codes (alias)
+    'Ala':'N[C@@H](C)C(=O)O',   'Gly':'NCC(=O)O',
+    'Val':'N[C@@H](C(C)C)C(=O)O', 'Leu':'N[C@@H](CC(C)C)C(=O)O',
+    'Ile':'N[C@@H]([C@@H](C)CC)C(=O)O', 'Pro':'N1[C@@H](CCC1)C(=O)O',
+    'Phe':'N[C@@H](Cc1ccccc1)C(=O)O', 'Trp':'N[C@@H](Cc1c[nH]c2ccccc12)C(=O)O',
+    'Met':'N[C@@H](CCSC)C(=O)O', 'Ser':'N[C@@H](CO)C(=O)O',
+    'Thr':'N[C@@H]([C@H](C)O)C(=O)O', 'Cys':'N[C@@H](CS)C(=O)O',
+    'Tyr':'N[C@@H](Cc1ccc(O)cc1)C(=O)O', 'Asn':'N[C@@H](CC(=O)N)C(=O)O',
+    'Gln':'N[C@@H](CCC(=O)N)C(=O)O', 'Asp':'N[C@@H](CC(=O)O)C(=O)O',
+    'Glu':'N[C@@H](CCC(=O)O)C(=O)O', 'Lys':'N[C@@H](CCCCN)C(=O)O',
+    'Arg':'N[C@@H](CCCNC(=N)N)C(=O)O', 'His':'N[C@@H](CC1=CNC=N1)C(=O)O',
 }
 
-# Common post-translational modifications
-PTM_SMILES = {
-    'pS': 'N[C@@H](COP(=O)(O)O)C(=O)O',     # Phosphoserine
-    'pT': 'N[C@@H]([C@H](C)OP(=O)(O)O)C(=O)O', # Phosphothreonine
-    'pY': 'N[C@@H](CC1=CC=C(OP(=O)(O)O)C=C1)C(=O)O', # Phosphotyrosine
-    'mK': 'N[C@@H](CCCCNC)C(=O)O',          # Methylated lysine
+# Post-translational modifications
+PTM_SCRIPT: Dict[str, str] = {
+    'pS':  'N[C@@H](COP(=O)(O)O)C(=O)O',
+    'pT':  'N[C@@H]([C@H](C)OP(=O)(O)O)C(=O)O',
+    'pY':  'N[C@@H](Cc1ccc(OP(=O)(O)O)cc1)C(=O)O',
+    'mK':  'N[C@@H](CCCCNC)C(=O)O',
+    'mR':  'N[C@@H](CCCNC(=N)NC)C(=O)O',
+    'acK': 'N[C@@H](CCCCNC(=O)C)C(=O)O',
+    'ubK': 'N[C@@H](CCCCN)C(=O)O',   # simplified
+    'oxM': 'N[C@@H](CCS(=O)C)C(=O)O',
+    'Hyp': 'N[C@@H](CO)C(=O)O',       # hydroxyproline (simplified)
+    'Hyl': 'N[C@@H](CCCO)C(=O)O',     # hydroxylysine (simplified)
+    'Orn': 'N[C@@H](CCCN)C(=O)O',
+    'Cit': 'N[C@@H](CCCNC(=O)N)C(=O)O',
+    'Sec': 'N[C@@H](C[Se])C(=O)O',
+    'Pyl': 'N[C@@H](CCCCNC(=O)C1CC=NC1)C(=O)O',
+    'nitY':'N[C@@H](Cc1ccc([N+](=O)[O-])cc1)C(=O)O',
+    'suK': 'N[C@@H](CCCCNS(=O)(=O)O)C(=O)O',
+    'Dpr': 'N[C@@H](CN)C(=O)O',
+    'Dab': 'N[C@@H](CCN)C(=O)O',
+    'Sar': 'CNCC(=O)O',
+    'Gla': 'N[C@@H](CCC(=O)O)C(=O)O',  # gamma-carboxyglutamic (simplified)
 }
+
+# Nucleotide base SCRIPT notation
+NUCLEOTIDE_SCRIPT: Dict[str, str] = {
+    'A':  'Nc1ncnc2[nH]cnc12',               # adenine
+    'G':  'Nc1nc2[nH]cnc2c(=O)[nH]1',        # guanine
+    'C':  'Nc1cc[nH]c(=O)n1',               # cytosine — use non-aromatic tautomer
+    'T':  'Cc1c[nH]c(=O)[nH]c1=O',          # thymine
+    'U':  'O=C1C=CN([H])C(=O)N1',           # uracil
+    'I':  'O=c1[nH]cnc2[nH]cnc12',          # hypoxanthine / inosine base
+    'dA': 'Nc1ncnc2[nH]cnc12',
+    'dG': 'Nc1nc2[nH]cnc2c(=O)[nH]1',
+    'dC': 'Nc1ccn([H])c(=O)n1',
+    'dT': 'Cc1c[nH]c(=O)[nH]c1=O',
+    'rA': 'Nc1ncnc2[nH]cnc12',
+    'rG': 'Nc1nc2[nH]cnc2c(=O)[nH]1',
+    'rC': 'Nc1ccn([H])c(=O)n1',
+    'rU': 'O=C1C=CN([H])C(=O)N1',
+}
+
+# Nucleotide modification SCRIPT notation
+NUC_MOD_SCRIPT: Dict[str, str] = {
+    'm5C':  'Cc1cn([H])c(=O)nc1N',           # 5-methylcytosine
+    'm6A':  'CNC1=NC=NC2=C1N=CN2',           # N6-methyladenine
+    'hm5C': 'NCO.Nc1cc[nH]c(=O)n1',         # 5-hydroxymethylcytosine (simplified)
+    'f5C':  'O=Cc1cn([H])c(=O)nc1N',        # 5-formylcytosine
+    'ca5C': 'OC(=O)c1cn([H])c(=O)nc1N',     # 5-carboxylcytosine
+    'm1A':  'Cn1cnc2c1ncnc2N',              # 1-methyladenine
+    'm1G':  'CN1C=NC2=C1N=C(N)NC2=O',       # 1-methylguanosine
+    'm2G':  'CNC1=NC2=C(N=CN2)C(=O)N1',     # N2-methylguanosine (simplified)
+    'm22G': 'CN(C)c1nc2[nH]cnc2c(=O)[nH]1', # N2,N2-dimethylguanosine (simplified)
+    'm7G':  'CN1CN=C2NC(=O)C(=NC2=N1)N',    # 7-methylguanosine
+    'psU':  'O=C1NC(=O)CC=N1',              # pseudouridine
+    's4U':  'O=C1C=CN([H])C(=S)N1',         # 4-thiouridine
+    'diU':  'O=C1NC(=O)CCN1',              # dihydrouridine
+    'I':    'O=c1[nH]cnc2[nH]cnc12',        # inosine/hypoxanthine
+}
+
+
+# Combined lookup: all monomer codes
+ALL_MONOMERS: Dict[str, str] = {
+    **AMINO_ACID_SCRIPT,
+    **PTM_SCRIPT,
+    **NUCLEOTIDE_SCRIPT,
+    **NUC_MOD_SCRIPT,
+}
+
 
 class PeptideHandler:
-    """Handle peptide macro mode {A.G.S...}"""
-    
-    def __init__(self):
-        self.amino_acids = AMINO_ACID_SMILES
-        self.ptms = PTM_SMILES
-    
-    def expand_peptide_block(self, peptide_sequence: List[str]) -> Optional[str]:
-        """Convert peptide sequence to full atomic SMILES"""
-        if not peptide_sequence:
-            return None
-        
-        smiles_parts = []
-        
-        for i, residue in enumerate(peptide_sequence):
-            # Get SMILES for this residue
-            if residue in self.amino_acids:
-                aa_smiles = self.amino_acids[residue]
-            elif residue in self.ptms:
-                aa_smiles = self.ptms[residue]
-            else:
-                return None  # Unknown residue
-            
-            # Modify for peptide bond formation
-            if i == 0:
-                # First residue - keep N-terminus
-                smiles_parts.append(aa_smiles)
-            else:
-                # Remove N-terminus and form peptide bond
-                # This is simplified - full implementation would need proper bond formation
-                modified_smiles = self._remove_n_terminus(aa_smiles)
-                smiles_parts.append(modified_smiles)
-        
-        # Join with peptide bonds (simplified)
-        return self._join_with_peptide_bonds(smiles_parts)
-    
-    def _remove_n_terminus(self, smiles: str) -> str:
-        """Remove N-terminus for peptide bond formation"""
-        # Simplified - remove leading N
-        if smiles.startswith('N[C@@H]'):
-            return smiles[1:]  # Remove N
-        elif smiles.startswith('NCC'):
-            return smiles[1:]  # Remove N (glycine case)
-        elif smiles.startswith('N1[C@@H]'):
-            return smiles[2:]  # Remove N1 (proline case)
-        return smiles
-    
-    def _join_with_peptide_bonds(self, smiles_parts: List[str]) -> str:
-        """Join amino acid SMILES with peptide bonds"""
-        # Simplified joining - full implementation would need proper chemistry
-        return '.'.join(smiles_parts)
-    
-    def parse_peptide_notation(self, peptide_string: str) -> Optional[List[str]]:
-        """Parse {A.G.S.C[A]K} notation into residue list"""
-        # Remove braces
-        if not (peptide_string.startswith('{') and peptide_string.endswith('}')):
-            return None
-        
-        inner = peptide_string[1:-1]
-        
-        # Split by dots
-        residues = []
-        i = 0
-        while i < len(inner):
-            if inner[i] == '.':
-                i += 1
-                continue
-            
-            # Check for PTM (multi-character)
-            if i + 1 < len(inner) and inner[i:i+2] in self.ptms:
-                residues.append(inner[i:i+2])
-                i += 2
-            # Check for bridge notation [A]
-            elif inner[i] == '[':
-                end = inner.find(']', i)
-                if end != -1:
-                    residues.append(inner[i:end+1])
-                    i = end + 1
-                else:
-                    return None  # Malformed
-            # Single character amino acid
-            elif inner[i] in self.amino_acids:
-                residues.append(inner[i])
-                i += 1
-            else:
-                return None  # Unknown residue
-        
-        return residues
-    
-    def is_valid_peptide_sequence(self, sequence: List[str]) -> bool:
-        """Check if peptide sequence is valid"""
-        for residue in sequence:
-            if residue.startswith('[') and residue.endswith(']'):
-                # Bridge notation - assume valid for now
-                continue
-            elif residue not in self.amino_acids and residue not in self.ptms:
-                return False
-        return True
+    """
+    Handle biopolymer macro notation: {A.G.S} peptides and {A.G.C.T} nucleic acids.
 
-# Convenience functions
-def expand_peptide(peptide_string: str) -> Optional[str]:
-    """Expand peptide notation to full SMILES"""
-    handler = PeptideHandler()
-    sequence = handler.parse_peptide_notation(peptide_string)
-    if sequence is None:
-        return None
-    return handler.expand_peptide_block(sequence)
+    Instantiated with a GenerativeStateMachine; the handle(tree) method
+    walks the peptide_chain parse tree and adds atoms/bonds to the state machine
+    by parsing each monomer's SCRIPT through RDKit and transferring atoms.
+    """
 
-def is_valid_peptide(peptide_string: str) -> bool:
-    """Check if peptide notation is valid"""
-    handler = PeptideHandler()
-    sequence = handler.parse_peptide_notation(peptide_string)
-    if sequence is None:
-        return False
-    return handler.is_valid_peptide_sequence(sequence)
+    def __init__(self, state=None):
+        self.state = state
+        self.monomers = ALL_MONOMERS
+
+    # ── Public interface ────────────────────────────────────────
+
+    def handle(self, tree: Tree) -> None:
+        """
+        Walk a peptide_chain parse tree and populate self.state with atoms/bonds.
+        Each monomer is expanded to its atomic SCRIPT and added to the molecule.
+        The current implementation stores monomers as disconnected fragments
+        (full polymer connectivity requires a proper peptide bond builder).
+        """
+        if self.state is None:
+            return
+
+        monomers = self._collect_monomers(tree)
+        for code in monomers:
+            script_str = self.monomers.get(code)
+            if script_str:
+                self._add_monomer_script(script_str)
+            # Unknown codes are silently skipped (forward-compatible)
+
+    # ── Tree walking ────────────────────────────────────────────
+
+    def _collect_monomers(self, tree: Tree) -> List[str]:
+        """Extract ordered list of monomer codes from a peptide_chain tree."""
+        codes = []
+        for subtree in tree.iter_subtrees():
+            data = subtree.data.lstrip('!')
+            if data == 'monomer':
+                for token in subtree.children:
+                    if isinstance(token, Token):
+                        codes.append(str(token))
+                        break
+            # Also catch bare nucleotide/PTM tokens outside monomer tree
+            # (grammar may route them differently under monomer_element)
+            elif data == 'monomer_element':
+                pass  # handled via monomer subtree above
+        return codes
+
+    def _add_monomer_script(self, script_str: str) -> None:
+        """Parse a monomer SCRIPT and transfer atoms/bonds into self.state."""
+        try:
+            from rdkit import Chem
+            from script.rdkit_bridge import from_rdkit
+            mol = Chem.MolFromSmiles(script_str)
+            if mol is None:
+                return
+            core = from_rdkit(mol)
+            # Offset indices by current atom count in state
+            offset = len(self.state.mol.atoms)
+            for atom in core.atoms:
+                self.state.mol.add_atom(atom)
+            for bond in core.bonds:
+                from script.mol import CoreBond
+                new_bond = CoreBond(
+                    bond.begin_atom_idx + offset,
+                    bond.end_atom_idx + offset,
+                    bond.bond_type,
+                )
+                self.state.mol.add_bond_obj(new_bond)
+        except Exception:
+            pass  # Degrade gracefully — unknown monomers skip
+
+    # ── Convenience methods ─────────────────────────────────────
+
+    def expand_to_script(self, sequence: List[str]) -> Optional[str]:
+        """Return dot-joined SCRIPT for a sequence of monomer codes."""
+        parts = []
+        for code in sequence:
+            s = self.monomers.get(code)
+            if s:
+                parts.append(s)
+        return '.'.join(parts) if parts else None
+
+    def is_known(self, code: str) -> bool:
+        return code in self.monomers
+
+    def monomer_type(self, code: str) -> str:
+        """Return 'amino_acid', 'ptm', 'nucleotide', 'nuc_mod', or 'unknown'."""
+        if code in AMINO_ACID_SCRIPT: return 'amino_acid'
+        if code in PTM_SCRIPT:        return 'ptm'
+        if code in NUCLEOTIDE_SCRIPT: return 'nucleotide'
+        if code in NUC_MOD_SCRIPT:    return 'nuc_mod'
+        return 'unknown'
+
+
+# ── Convenience functions ────────────────────────────────────────
+
+def expand_peptide_to_script(sequence_str: str) -> Optional[str]:
+    """Expand a dot-separated monomer sequence string to SCRIPT."""
+    codes = [c.strip() for c in sequence_str.strip('{}').split('.') if c.strip()]
+    h = PeptideHandler()
+    return h.expand_to_script(codes)
+
+def is_valid_monomer(code: str) -> bool:
+    return code in ALL_MONOMERS

@@ -4,7 +4,7 @@ This file is the ONLY place where RDKit is allowed as a dependency.
 """
 
 from typing import Optional, Dict, List, Tuple, Any
-from .mol import CoreMolecule, CoreAtom
+from .mol import CoreMolecule, CoreAtom, BondType, StereoType
 from .parser import SCRIPTParser
 from .cip import compute_cip_priorities, permutation_parity, get_cip_chirality
 
@@ -68,17 +68,31 @@ def from_rdkit(rd_mol) -> CoreMolecule:
             core_atom._rdkit_chiral_tag = int(chiral_tag)
         else:
             core_atom._rdkit_chiral_tag = 0
-            
+
+        # Detect allene centre: atom with exactly 2 double bonds
+        # Tag as @AX (axial chirality) even though RDKit loses the stereo bit —
+        # at least the structural feature is recorded for downstream use.
+        dbl_count = sum(1 for b in atom.GetBonds()
+                        if b.GetBondType() == Chem.BondType.DOUBLE)
+        if dbl_count == 2:
+            core_atom.stereo_type = StereoType.ATROPISOMER  # @AX
+
         core.add_atom(core_atom)
         
     # Add bonds
     for bond in mol.GetBonds():
         bt = bond.GetBondType()
-        order = 1
-        if bt == Chem.BondType.DOUBLE: order = 2
-        elif bt == Chem.BondType.TRIPLE: order = 3
-        elif bt == Chem.BondType.AROMATIC: order = 4
-        
+        if bt == Chem.BondType.DOUBLE:
+            order = BondType.DOUBLE
+        elif bt == Chem.BondType.TRIPLE:
+            order = BondType.TRIPLE
+        elif bt == Chem.BondType.AROMATIC:
+            order = BondType.AROMATIC
+        elif bt == Chem.BondType.DATIVE:
+            order = BondType.DATIVE
+        else:
+            order = BondType.SINGLE
+
         core.add_bond(
             bond.GetBeginAtomIdx(),
             bond.GetEndAtomIdx(),
@@ -140,31 +154,53 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Chem.Mol]:
     """Converts a SCRIPT CoreMolecule to an RDKit Mol."""
     if not RDKIT_AVAILABLE:
         return None
-        
+
+    # BondType -> RDKit BondType mapping
+    _BOND_MAP = {
+        BondType.SINGLE:     Chem.BondType.SINGLE,
+        BondType.DOUBLE:     Chem.BondType.DOUBLE,
+        BondType.TRIPLE:     Chem.BondType.TRIPLE,
+        BondType.AROMATIC:   Chem.BondType.AROMATIC,
+        BondType.DATIVE:     Chem.BondType.DATIVE,
+        BondType.REV_DATIVE: Chem.BondType.DATIVE,   # RDKit has one dative direction
+        BondType.TAUTOMERIC: Chem.BondType.SINGLE,   # RDKit has no tautomeric; use single
+        BondType.COORDINATE: Chem.BondType.DATIVE,
+        BondType.STAR:       Chem.BondType.SINGLE,
+        # Legacy int fallback
+        1: Chem.BondType.SINGLE,
+        2: Chem.BondType.DOUBLE,
+        3: Chem.BondType.TRIPLE,
+        4: Chem.BondType.AROMATIC,
+    }
+
     try:
         mol = Chem.RWMol()
         for i, atom_data in enumerate(core_mol.atoms):
-            atom = Chem.Atom(atom_data.atomic_num)
-            atom.SetFormalCharge(atom_data.formal_charge)
-            atom.SetIsotope(atom_data.isotope)
-            atom.SetIsAromatic(getattr(atom_data, 'is_aromatic', False))
-            
-            if atom_data.implicit_hs is not None:
-                atom.SetNumExplicitHs(atom_data.implicit_hs)
+            # Wildcard atom
+            if getattr(atom_data, 'is_wildcard', False) or atom_data.atomic_num == 0:
+                atom = Chem.Atom(0)   # atomic_num=0 = wildcard/query in RDKit
                 atom.SetNoImplicit(True)
-            
+            else:
+                atom = Chem.Atom(atom_data.atomic_num)
+                atom.SetFormalCharge(atom_data.formal_charge)
+                atom.SetIsotope(atom_data.isotope)
+                atom.SetIsAromatic(getattr(atom_data, 'is_aromatic', False))
+                if atom_data.implicit_hs is not None:
+                    atom.SetNumExplicitHs(atom_data.implicit_hs)
+                    atom.SetNoImplicit(True)
+                # Radical electrons
+                if getattr(atom_data, 'radical_electrons', 0):
+                    atom.SetNumRadicalElectrons(atom_data.radical_electrons)
+                # Atom map number (reaction tracking)
+                if getattr(atom_data, 'mapping', 0):
+                    atom.SetAtomMapNum(atom_data.mapping)
             mol.AddAtom(atom)
 
         for bond_data in core_mol.bonds:
-            order = bond_data.bond_type
-            bt = Chem.BondType.SINGLE
-            if order == 2: bt = Chem.BondType.DOUBLE
-            elif order == 3: bt = Chem.BondType.TRIPLE
-            elif order == 4: bt = Chem.BondType.AROMATIC
-            
+            bt = _BOND_MAP.get(bond_data.bond_type, Chem.BondType.SINGLE)
             b_idx = mol.AddBond(bond_data.begin_atom_idx, bond_data.end_atom_idx, bt)
             rd_bond = mol.GetBondWithIdx(b_idx - 1)
-            
+
             if hasattr(bond_data, 'bond_dir') and bond_data.bond_dir > 0:
                 if bond_data.bond_dir == 1: rd_bond.SetBondDir(Chem.BondDir.BEGINWEDGE)
                 elif bond_data.bond_dir == 2: rd_bond.SetBondDir(Chem.BondDir.BEGINDASH)
@@ -172,33 +208,60 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Chem.Mol]:
                 elif bond_data.bond_dir == 4: rd_bond.SetBondDir(Chem.BondDir.ENDUPRIGHT)
 
         mol.UpdatePropertyCache(strict=False)
-        
-        # FIX: Correct chiral tags based on neighbor order reconciliation
+
+        # Wire tetrahedral stereo (existing logic)
         for i, atom_data in enumerate(core_mol.atoms):
-            if hasattr(atom_data, '_initial_tag') and atom_data._initial_tag > 0:
+            stereo_t = getattr(atom_data, 'stereo_type', StereoType.NONE)
+            tag = getattr(atom_data, '_initial_tag', 0)
+
+            if stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL) and tag > 0:
                 rd_atom = mol.GetAtomWithIdx(i)
-                # SCRIPT priority order
                 script_order = _get_script_neighbor_order(core_mol, i)
-                # Actual bond addition order in RDKit
                 rdkit_order = [n.GetIdx() for n in rd_atom.GetNeighbors()]
                 if atom_data.implicit_hs > 0:
                     rdkit_order.append(-1)
-                
                 if len(script_order) == 4 and len(rdkit_order) == 4:
-                    # Stored bit: 0=@ (CCW), 1=@@ (CW)
-                    stored_bit = 0 if atom_data._initial_tag == 2 else 1
-                    # Calculate parity of permutation from SCRIPT to RDKit
+                    stored_bit = 0 if tag == 2 else 1
                     p = permutation_parity(script_order, rdkit_order)
                     target_bit = stored_bit ^ p
-                    tag = 2 if target_bit == 0 else 1
-                    rd_atom.SetChiralTag(Chem.ChiralType(tag))
+                    # target_bit=0 means CCW (tag 2), target_bit=1 means CW (tag 1)
+                    final_tag = 2 if target_bit == 0 else 1
+                    rd_atom.SetChiralTag(Chem.ChiralType(final_tag))
                 else:
-                    # Fallback
-                    rd_atom.SetChiralTag(Chem.ChiralType(atom_data._initial_tag))
+                    rd_atom.SetChiralTag(Chem.ChiralType(tag))
+
+            elif stereo_t == StereoType.SQUARE_PLANAR and tag > 0:
+                # RDKit represents square planar as CHI_SQUAREPLANAR
+                rd_atom = mol.GetAtomWithIdx(i)
+                try:
+                    rd_atom.SetChiralTag(Chem.ChiralType.CHI_SQUAREPLANAR)
+                except AttributeError:
+                    pass  # Older RDKit without CHI_SQUAREPLANAR
+
+            elif stereo_t == StereoType.OCTAHEDRAL and tag > 0:
+                rd_atom = mol.GetAtomWithIdx(i)
+                try:
+                    rd_atom.SetChiralTag(Chem.ChiralType.CHI_OCTAHEDRAL)
+                except AttributeError:
+                    pass
+
+            elif stereo_t == StereoType.TRIG_BIPYRAMIDAL and tag > 0:
+                rd_atom = mol.GetAtomWithIdx(i)
+                try:
+                    rd_atom.SetChiralTag(Chem.ChiralType.CHI_TRIGONALBIPYRAMIDAL)
+                except AttributeError:
+                    pass
 
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         Chem.SetDoubleBondNeighborDirections(mol)
         Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+
+        # Re-apply radical electrons after sanitization (RDKit may override them)
+        for i, atom_data in enumerate(core_mol.atoms):
+            rad = getattr(atom_data, 'radical_electrons', 0)
+            if rad:
+                mol.GetAtomWithIdx(i).SetNumRadicalElectrons(rad)
+
         return mol.GetMol()
     except Exception as e:
         # print(f"DEBUG: CoreToRDKit failed: {e}")
@@ -227,10 +290,11 @@ def _get_script_neighbor_order(mol, atom_idx):
             else:
                 children.append(nbr_idx)
     
-    # SCRIPT Priority: Parent < H < Ring-Closures < Ring-Openings < Branches/Chain
+    # SCRIPT Priority: H < Parent < Ring-Closures < Ring-Openings < Branches/Chain
+    # Must match canonical.py ordered_neighbors build order exactly.
     order = []
-    if parent != -1: order.append(parent)
     if atom.implicit_hs > 0: order.append(-1)
+    if parent != -1: order.append(parent)
     order.extend(ring_closures)
     order.extend(ring_openings)
     order.extend(children)
@@ -242,7 +306,29 @@ def MolFromSCRIPT(script_string: str) -> Optional[Chem.Mol]:
     result = parser.parse(script_string)
     if not result["success"]:
         return None
-    return CoreToRDKit(result["molecule"])
+    
+    molecule = result["molecule"]
+    
+    # Parser returns a list of CoreMolecules for multi-fragment strings
+    if isinstance(molecule, list):
+        if len(molecule) == 0:
+            return None
+        if len(molecule) == 1:
+            return CoreToRDKit(molecule[0])
+        # Convert each fragment and combine with RDKit
+        frags = []
+        for core_frag in molecule:
+            frag_mol = CoreToRDKit(core_frag)
+            if frag_mol is None:
+                return None
+            frags.append(frag_mol)
+        combined = frags[0]
+        for frag in frags[1:]:
+            combined = Chem.CombineMols(combined, frag)
+        return combined
+    
+    return CoreToRDKit(molecule)
+
 
 def SCRIPTFromMol(rd_mol) -> Optional[str]:
     """Helper for testing: RDKit Mol -> Canonical SCRIPT string."""
@@ -250,3 +336,21 @@ def SCRIPTFromMol(rd_mol) -> Optional[str]:
     core = from_rdkit(rd_mol)
     canonicalizer = SCRIPTCanonicalizer()
     return canonicalizer.canonicalize_mol(core)
+
+
+def script_to_smiles(script_string: str) -> Optional[str]:
+    """Convenience: SCRIPT string -> RDKit SMILES."""
+    mol = MolFromSCRIPT(script_string)
+    if mol:
+        return Chem.MolToSmiles(mol)
+    return None
+
+
+def smiles_to_script(smiles: str) -> Optional[str]:
+    """Convenience: SMILES -> Canonical SCRIPT."""
+    if not RDKIT_AVAILABLE:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol:
+        return SCRIPTFromMol(mol)
+    return None

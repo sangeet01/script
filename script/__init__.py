@@ -8,7 +8,7 @@ limitations in SMILES while maintaining human readability.
 from .parser import SCRIPTParser
 from .canonical import canonicalize_SCRIPT
 from .validator import is_valid_SCRIPT
-from .peptide import expand_peptide, is_valid_peptide
+from .peptide import expand_peptide_to_script, is_valid_monomer
 
 # Convenience function
 def parse_script(script_string: str):
