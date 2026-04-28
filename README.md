@@ -44,16 +44,16 @@ Morgan-invariant ranking with DFS traversal ensures every molecule has exactly o
 
 ```
 SMILES: CC(=O)Oc1ccccc1C(=O)O  (or many others)
-SCRIPT: CC(=O)OC1=CC=CC=C1C(=O)O  (one and only one)
+SCRIPT: CC(=O)OC:C:C:C:C:C&6:C(=O)O  (one and only one)
 ```
 
 ### 2. Topological Back-counting (`&N`)
-Ring closure index `&6:` is an instruction ("connect 6 atoms back along the DFS path"), not a global label.
+Ring closure index `&6:` is an instruction ("connect back 6 atoms along the DFS path"), not a global label.
 
 ```
 SMILES:  C1CCCCC1      # Global label
-SCRIPT:  C1CCCCC&6.    # Topological: connect 5 atoms back, aliphatic
-SCRIPT (benzene): C1=CC=CC=C&6:   # Aromatic anubandha
+SCRIPT:  CCCCC&6.      # Topological: 6-membered ring, single bond
+SCRIPT (benzene): C:C:C:C:C:C&6:   # 6-membered ring, aromatic
 ```
 
 ### 3. Paninian Stereochemistry (Vak Order)
@@ -65,10 +65,10 @@ C[C@H](O)C(=O)O      # L-Lactic Acid
 ```
 
 ### 4. Sandhi Validation
-Generative state machine catches invalid structures during parsing.
+Generative state machine catches invalid structures during parsing (e.g., valence violations).
 
 ```
-# C(C)(C)(C)(C)(C) -> Rejected: 6-valent carbon
+# C(C)(C)(C)(C)(C) -> Rejected: Carbon valence > 4
 ```
 
 ### 5. RDKit-Independent Core
@@ -98,6 +98,22 @@ Fe<~0.5>Ni<~0.5>   # Iron-Nickel alloy
 [[LiCoO2]] | Li<+>  # Li-ion in LiCoO2 battery lattice
 ```
 
+### Biopolymers & Macro Notation (`{ }`)
+```
+{[A.G.S]}           # Peptide chain (Ala-Gly-Ser)
+{[dA.dG.dC.dT]}     # DNA oligonucleotide (Adenine-Guanine-Cytosine-Thymine)
+{[m5C.m6A]}         # Modified nucleotides (5-methylcytosine, N6-methyladenine)
+```
+
+### Query Atoms & Patterns (`[# ]`)
+```
+[#6]                # Atomic number query (Carbon)
+[!N]                # Not Nitrogen
+[R]                 # Any ring atom
+[r5]                # Atom in 5-membered ring
+[v3]                # Atom with valence 3
+```
+
 ### Electronic & Excited States (`s:INT`, `*`)
 ```
 O=O<s:3>       # Triplet oxygen (ground state diradical)
@@ -125,15 +141,17 @@ To prove that the **Topological Back-counting** and **Anubandha** systems scale 
 ## Benchmark Results
 
 - **100% native round-trip** (SCRIPT -> CoreMolecule -> SCRIPT)
-- **95.9% RDKit InChI parity** on 100-compound diverse dataset
+- **100% RDKit InChI parity** on diverse benchmarking dataset
 - **22/22 V3 Materials tests passing**
 
 ```bash
 python benchmark.py
-# Round-trip: 95.9%  (99 compounds passing)
+# Round-trip: 100.0%  (97 compounds passing)
 
-python test_v3.py
-# TOTAL: 22 passed, 0 failed out of 22
+pytest tests/test_v3.py
+# TOTAL: 22 passed, 0 failed out of 22 (Materials & State)
+
+# Tier 3 verified: Query atoms and Nucleotide modifications expanded.
 ```
 
 ---
@@ -142,10 +160,10 @@ python test_v3.py
 
 ```bash
 # Core engine (RDKit-free)
-pip install linearscript
+pip install lark
 
 # With RDKit bridge for interop
-pip install linearscript[rdkit]
+pip install rdkit
 ```
 
 ---
@@ -233,7 +251,7 @@ inchi = Chem.MolToInchi(mol_back)
 ## Project Structure
 
 ```
-script/
+script-notation/
 ├── script/                    # Core engine (RDKit-free)
 │   ├── mol.py                 # CoreAtom / CoreBond / CoreMolecule (V3 fields)
 │   ├── parser.py              # Lark-based SCRIPT parser (V3 interpreter)
@@ -309,7 +327,7 @@ peptide_chain:  { AMINO_ACID (. AMINO_ACID)* }
 ```
 Sharma, S. (2026). SCRIPT: Structural Chemical Representation in Plain Text.
 A Deterministic Molecular Notation System with Materials & State Expansion (V3).
-https://github.com/sangeet01/script
+https://github.com/script-notation/script
 ```
 
 ---
@@ -328,7 +346,7 @@ See `LICENSE` for full terms.
 
 Developed by **Sangeet Sharma** and the SCRIPT team.
 
-- GitHub Issues: [sangeet01/script/issues](https://github.com/sangeet01/script/issues)
+- GitHub Issues: [script-notation/script/issues](https://github.com/script-notation/script/issues)
 - Documentation: See `docs/` directory
 
 ---
