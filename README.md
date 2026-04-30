@@ -5,154 +5,231 @@
   <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" width="100%">
 </p>
 
-**SCRIPT** is a deterministic, sovereign molecular notation system and RDKit-independent cheminformatics engine. Built on a Paninian linguistic model, SCRIPT provides a "one true string" for every molecule, reaction, material, and quantum state with 100% native round-trip consistency.
+SCRIPT is a deterministic, RDKit-independent molecular notation system and cheminformatics engine. Built on a Paninian linguistic model — where grammar rules are chemistry rules — SCRIPT gives every molecule, reaction, material, and quantum state exactly one canonical string.
+
+Not approximately one. One.
 
 ---
 
 ## Why SCRIPT?
 
-SMILES has served chemistry for 35 years, but its limitations are critical for modern AI/ML and materials science applications:
+SMILES has served chemistry for 35 years. It also has 35-year-old problems:
 
-- **Non-canonical**: Same molecule = multiple valid SMILES strings
-- **Ambiguous rings**: Global ring labels (`C1...C1`) create parsing complexity
-- **Stereochemistry fragility**: Neighbor ordering affects chirality interpretation
-- **No validation**: Invalid strings parse without error
-- **No materials support**: SMILES cannot express alloys, surfaces, or quantum states
+- **Non-canonical**: The same molecule produces different strings depending on which tool, version, or mood you used
+- **Ambiguous rings**: Global labels (`C1...C1`) require tracking open state across the whole string
+- **Stereochemistry fragility**: Chirality depends on neighbor ordering, which depends on parse order, which is not guaranteed
+- **No validation**: Invalid strings parse silently and blow up later
+- **No materials support**: SMILES cannot express alloys, surfaces, spin states, or anything beyond organic chemistry
 
-SCRIPT addresses all of these systematically:
+SCRIPT addresses all of these — not with patches, but at the grammar level:
 
 | Problem | SMILES | SCRIPT V3 |
 |---------|--------|-----------|
 | Canonicalization | Multiple valid strings | Path-invariant DFS traversal |
-| Ring notation | Global labels `C1...C1` | Topological `&N:` (invariant size) |
-| Aromaticity | `c1ccccc1` (lowercase hack) | Anubandha `:` (Grammar state) |
-| Tautomers | Multiple forms | Mobile `=:` (Unified form) |
-| Validation | Post-hoc | Generative state machine (Sandhi) |
-| Organometallics | Partial | Dative `->`, Coordinate `>`, Haptic `*n` |
+| Ring notation | Global labels `C1...C1` | Topological `&N` (local lookback) |
+| Ring bond type | Implicit / fragile | Explicit anubandha `&6-` / `&6:` |
+| Aromaticity | `c1ccccc1` (lowercase convention) | Anubandha `:` (grammar state) |
+| Tautomers | Multiple forms | Mobile bond `=:` |
+| Validation | Post-hoc sanitization | Generative Sandhi (real-time) |
+| Organometallics | Partial | Dative `->`, coordinate `>`, haptic `*n` |
 | Alloys | Not supported | Fractional occupancy `<~0.9>` |
 | Crystallography | Not supported | Macroscopic context `[[Rutile]]` |
 | Surfaces | Not supported | Phase boundary `\|` |
 | Quantum states | Not supported | Spin/excitation `<s:3>`, `<*>` |
 | Polymers | Not supported | Stochastic chains `{[CC]}n` |
+| Nucleic acids | Not supported | `{dA.m5C.dG.dT}` with 14 modification codes |
+| Query atoms | Not supported | `[#6]`, `[R]`, `[!N]`, `[v3]` |
+| Typed bonds | Integer order only | `BondType` enum (SINGLE→STAR, 9 values) |
+| Stereochemistry types | Tetrahedral only | `@SP`, `@OH`, `@AX`, `@TB`, `@PY` |
 
 ---
 
 ## Core Innovations
 
 ### 1. Deterministic Canonicalization
-Morgan-invariant ranking with DFS traversal ensures every molecule has exactly one canonical SCRIPT string.
+
+Morgan-invariant ranking with DFS traversal. One molecule, one string, every time.
 
 ```
-SMILES: CC(=O)Oc1ccccc1C(=O)O  (or many others)
-SCRIPT: CC(=O)OC:C:C:C:C:C&6:C(=O)O  (one and only one)
+SMILES: CC(=O)Oc1ccccc1C(=O)O  (one of many valid forms)
+SCRIPT: C(C(=O)O):C(OC(=O)C):C:C:C:C&6:  (one and only one)
 ```
 
-### 2. Topological Back-counting (`&N`)
-Ring closure index `&6:` is an instruction ("connect back 6 atoms along the DFS path"), not a global label.
+### 2. Topological Ring Closures (`&N`)
+
+Ring closure `&6-` is an instruction: *connect 6 atoms back along the DFS path, via a single bond*. No global state, no unclosed ring errors, no ambiguity.
 
 ```
-SMILES:  C1CCCCC1      # Global label
-SCRIPT:  CCCCC&6.      # Topological: 6-membered ring, single bond
-SCRIPT (benzene): C:C:C:C:C:C&6:   # 6-membered ring, aromatic
+SMILES:  C1CCCCC1         # Global label — tracks open ring 1
+SCRIPT:  CCCCCC&6-        # Topological: close aliphatic ring, lookback 6
+
+SMILES:  c1ccccc1         # Aromatic by convention
+SCRIPT:  C:C:C:C:C:C&6:  # Explicit aromatic anubandha
 ```
 
-### 3. Paninian Stereochemistry (Vak Order)
-Chirality is resolved using the DFS sequence order as the native coordinate frame.
+The anubandha (bond-type marker on the ring closure) is `-` for aliphatic and `:` for aromatic — the same bond symbols used everywhere else in SCRIPT. No new syntax to learn.
 
-```
-C[C@H](O)C(=O)O      # L-Lactic Acid
-# Order: [parent, H, O, C(=O)O] -> @ = CCW in Vak space
-```
+### 3. Sandhi Validation (Panini-Inspired)
 
-### 4. Sandhi Validation
-Generative state machine catches invalid structures during parsing (e.g., valence violations).
+The generative state machine tracks valence during parsing. Invalid structures are rejected at the bond level, not after construction.
 
-```
-# C(C)(C)(C)(C)(C) -> Rejected: Carbon valence > 4
+```python
+parser.parse("C(C)(C)(C)(C)(C)")  # Rejected: 6-valent carbon
+parser.parse("[N+](=O)[O-]")      # Accepted: formal charge adjusts max valence
 ```
 
-### 5. RDKit-Independent Core
-Zero dependencies for core operations. RDKit is optional for interop only.
+The name comes from Panini's *Ashtadhyayi* — junction rules that govern how morphemes combine. Here they govern how atoms bond.
+
+### 4. CIP-Based Stereochemistry
+
+Chirality is resolved using Cahn-Ingold-Prelog priorities as a universal reference frame. The DFS neighbor order is transformed to CIP space via permutation parity, giving a canonical chiral symbol that doesn't depend on parse order.
+
+```python
+# Glucose: four stereocenters, ring, and no ambiguity
+SCRIPT: O[C@H]([C@@H]([C@H]([C@@H](C&6-O)O)O)O)CO
+# All four centers survive round-trip through CoreMolecule and back
+```
+
+Extended stereo types are first-class: `@SP` (square planar), `@OH` (octahedral), `@AX` (axial/allenic), `@TB` (trigonal bipyramidal), `@PY` (pyramidal).
+
+### 5. Typed IR — `BondType` and `StereoType` Enums
+
+The `CoreMolecule` intermediate representation uses enums, not bare integers. A dative bond is `BondType.DATIVE`, not `5`. The IR is self-documenting and safe to serialise independently of RDKit.
+
+```python
+from script.mol import BondType, StereoType
+
+BondType.SINGLE     # —  covalent
+BondType.DATIVE     # -> donor→acceptor
+BondType.TAUTOMERIC # =: mobile bond
+BondType.COORDINATE # >  haptic
+
+StereoType.SQUARE_PLANAR    # @SP
+StereoType.OCTAHEDRAL       # @OH
+StereoType.ATROPISOMER      # @AX  (allenes, biaryls)
+```
+
+### 6. RDKit-Independent Core
+
+The parser, canonicalizer, state machine, and IR have zero non-Lark dependencies. RDKit is an optional bridge for interop, not a foundation.
 
 ---
 
 ## V3: Materials & State Expansion
 
-### Alloys & Non-Stoichiometry (`~FLOAT`)
+### Alloys & Non-Stoichiometry
+
 ```
-Ti<~0.9>N<~0.1>    # Doped Titanium Nitride
-Fe<~0.5>Ni<~0.5>   # Iron-Nickel alloy
+Ti<~0.9>N<~0.1>    # Doped titanium nitride
+Fe<~0.5>Ni<~0.5>   # Iron-nickel alloy
 ```
 
-### Crystallography & Polymorphs (`[[ ]]`)
+### Crystallography & Polymorphs
+
 ```
-[[Rutile]] Ti(O)2   # TiO2 in Rutile phase
-[[Anatase]] Ti(O)2  # Same formula, different structure
-[[bcc]] Fe          # Ferrite (body-centered cubic)
-[[fcc]] Fe          # Austenite (face-centered cubic)
+[[Rutile]] Ti(O)2   # TiO2 rutile phase
+[[bcc]] Fe          # Ferrite
+[[fcc]] Fe          # Austenite
 ```
 
-### Surface & Interface Chemistry (`|`)
+### Surface & Interface Chemistry
+
 ```
-[[Pt_111]] | >C=O   # CO adsorbed on Platinum 111 surface
-[[LiCoO2]] | Li<+>  # Li-ion in LiCoO2 battery lattice
+[[Pt_111]] | >C=O   # CO on platinum 111
+[[LiCoO2]] | Li<+>  # Li-ion in battery lattice
 ```
 
-### Biopolymers & Macro Notation (`{ }`)
+### Electronic & Excited States
+
 ```
-{[A.G.S]}           # Peptide chain (Ala-Gly-Ser)
-{[dA.dG.dC.dT]}     # DNA oligonucleotide (Adenine-Guanine-Cytosine-Thymine)
-{[m5C.m6A]}         # Modified nucleotides (5-methylcytosine, N6-methyladenine)
+O=O<s:3>       # Triplet oxygen
+O=O<s:1,*>     # Singlet oxygen (excited)
+[C<*>]         # Excited carbon
 ```
 
-### Query Atoms & Patterns (`[# ]`)
+### Polymers
+
 ```
-[#6]                # Atomic number query (Carbon)
-[!N]                # Not Nitrogen
-[R]                 # Any ring atom
-[r5]                # Atom in 5-membered ring
-[v3]                # Atom with valence 3
+{[CC]}n              # Polyethylene (unspecified length)
+{[CC]}<n:50-100>     # Stochastic PE, 50–100 repeat units
+{[CC]}<n:10>         # Exact 10-mer
 ```
 
-### Electronic & Excited States (`s:INT`, `*`)
-```
-O=O<s:3>       # Triplet oxygen (ground state diradical)
-O=O<s:1,*>     # Singlet oxygen (excited state)
+### Biopolymers — Peptides and Nucleic Acids
+
+```python
+# Peptides (20 amino acids + 20 PTM codes)
+parser.parse("{A.G.S.K}")           # Ala-Gly-Ser-Lys
+parser.parse("{pS.G.acK.V}")        # phosphoSer, acetylLys
+
+# Nucleic acids (DNA, RNA, and 14 epigenetic modification codes)
+parser.parse("{dA.dG.dC.dT}")       # DNA strand
+parser.parse("{rA.rG.rC.rU}")       # RNA strand
+parser.parse("{m5C.dG.dA.dT}")      # DNA methylation (5-methylcytosine)
+parser.parse("{m6A.rG.rC.rU}")      # m6A RNA modification
+parser.parse("{psU.rG.rC.rA}")      # pseudouridine
 ```
 
-### Polymers & Stochastic Chains (`{[ ]}`)
+Supported modification codes: `m5C`, `m6A`, `hm5C`, `f5C`, `ca5C`, `m1A`, `m1G`, `m2G`, `m22G`, `m7G`, `psU`, `s4U`, `I`, `diU`.
+
+---
+
+## Reactions & Salts
+
+```python
+# Standard reaction
+parser.parse("CC>>CCO")
+
+# Reaction with agents (catalyst/solvent in middle)
+parser.parse("CC>[Pd]>CCO")         # returns Reaction(reactants, agents, products)
+
+# Salts and solvates — separator type is preserved
+parser.parse("CC.O")                # solvate (fragment_separator='.')
+parser.parse("[Na+]~[Cl-]")         # ionic pair (fragment_separator='~')
+
+# Atom mapping
+parser.parse("[C:1]=O>>[C:1]O")     # maps C atom across the reaction
 ```
-{[CC]}n              # Polyethylene
-{[CC]}<n:50-100>     # Stochastic PE, 50-100 units
+
+---
+
+## Query Atoms (Substructure Patterns)
+
+```python
+# SMARTS-style query atoms — for substructure search, not canonical output
+parser.parse("[#6]CC")     # atomic number 6 (carbon)
+parser.parse("[R]CC")      # any ring atom
+parser.parse("[r5]CC")     # atom in 5-membered ring
+parser.parse("[v3]CC")     # valence = 3
+parser.parse("[!N]CC")     # not nitrogen
+parser.parse("[a]CC")      # aromatic atom
+parser.parse("[#6,#7]C")   # carbon or nitrogen (OR query)
+
+mol = result["molecule"]
+atom = mol.atoms[0]
+print(atom.is_query)           # True
+print(atom.query_atomic_nums)  # [6]
+print(atom.query_not)          # False
 ```
-
-### The "Boss Fights" (Stress Tests)
-
-To prove that the **Topological Back-counting** and **Anubandha** systems scale to real-world complexity, SCRIPT was validated against these high-complexity scaffolds:
-
-- **Taxol (Paclitaxel)**: 11 stereocenters, fused/bridged system.
-  - `TAXOL: O[C@H]C[C@H]([C@@](C)C([C@H](OC(C)=O)C=C([C@@H](C[C@H]([C@H](OC(C:C:C:C:C:C&6:)=O)[C@H]&10.[C@]&14.(OC(=O)C)C&16.)C&6.(C)C)OC([C@H]([C@@H](C:C:C:C:C:C&6:)NC(C:C:C:C:C:C&6:)=O)O)=O)C)=O)O`
-  
-- **Strychnine**: Dense polycyclic structure.
-  - `STRYCHNINE: O=CNCCCCN(CCC&10.)CC=C&5.OCC&10.C&6.(C=&13.C=CC=C&18.)CC&5.C=C`
 
 ---
 
 ## Benchmark Results
 
-- **100% native round-trip** (SCRIPT -> CoreMolecule -> SCRIPT)
-- **100% RDKit InChI parity** on diverse benchmarking dataset
-- **22/22 V3 Materials tests passing**
+| Test suite | Result |
+|---|---|
+| 10-compound drug benchmark (round-trip InChI) | **10/10** |
+| Tier 1 — typed IR features | **14/14** |
+| Tier 2 — semantic metadata | **12/12** |
+| Tier 3 — query atoms, biopolymers, allenes | **13/13** |
+| V3 materials tests | **22/22** |
 
 ```bash
 python benchmark.py
-# Round-trip: 100.0%  (97 compounds passing)
-
-pytest tests/test_v3.py
-# TOTAL: 22 passed, 0 failed out of 22 (Materials & State)
-
-# Tier 3 verified: Query atoms and Nucleotide modifications expanded.
+# Round-trip: 10/10
 ```
+
+The 10-compound benchmark covers Aspirin, Metformin, Ciprofloxacin·HCl, Nifedipine (nitro group + charged atoms), Ibuprofen, Captopril (proline ring), Glucose (4 stereocenters), Metformin·HCl (salt), Magnesium stearate (metal + multi-fragment), and PVP — chosen to stress-test salts, stereocenters, ring closures, metals, and ionic species simultaneously.
 
 ---
 
@@ -160,10 +237,10 @@ pytest tests/test_v3.py
 
 ```bash
 # Core engine (RDKit-free)
-pip install lark
+pip install linearscript
 
 # With RDKit bridge for interop
-pip install rdkit
+pip install linearscript[rdkit]
 ```
 
 ---
@@ -177,59 +254,14 @@ from script.parser import SCRIPTParser
 from script.canonical import SCRIPTCanonicalizer
 
 parser = SCRIPTParser()
-result = parser.parse("CC(=O)OC1=CC=CC=C1C(=O)O")
+result = parser.parse("C(C(=O)O):C(OC(=O)C):C:C:C:C&6:")  # Aspirin
 mol = result["molecule"]
 
 print(f"Atoms: {len(mol.atoms)}")
 print(f"Bonds: {len(mol.bonds)}")
 
-# Canonicalize CoreMolecule to SCRIPT string
-canonicalizer = SCRIPTCanonicalizer()
-script_str = canonicalizer.canonicalize_core(mol)
-print(f"Canonical: {script_str}")
-```
-
-### Materials Science (V3)
-
-```python
-parser = SCRIPTParser()
-
-# Alloy - get fractional occupancy
-res = parser.parse("Ti<~0.9>N<~0.1>")
-mol = res["molecule"]
-print(mol.atoms[0].occupancy)  # 0.9
-
-# Crystallographic context
-res = parser.parse("[[Rutile]] Ti(O)2")
-mol = res["molecule"]
-print(mol.macroscopic_context)  # "Rutile"
-
-# Surface adsorption
-res = parser.parse("[[Pt_111]] | >C=O")
-print(res["success"])  # True
-
-# Electronic state
-res = parser.parse("O=O<s:3>")
-mol = res["molecule"]
-print(mol.atoms[-1].spin)  # 3
-```
-
-### Reactions & Atom Mapping
-
-```python
-# Reaction with atom-to-atom mapping
-res = parser.parse("[C:1]OCO>>[C:1]O")
-
-# Salt / solvent system
-res = parser.parse("[Na+].[Cl-]")   # NaCl
-```
-
-### Peptides & Polymers
-
-```python
-parser.parse("{A.G.S[A]K}")         # Ala-Gly-Ser-Lys with disulfide bridge
-parser.parse("{[CC]}n")             # Polyethylene
-parser.parse("{[CC]}<n:50-100>")    # Stochastic PE, 50-100 units
+canon = SCRIPTCanonicalizer()
+print(canon.canonicalize_core(mol))   # same string back
 ```
 
 ### RDKit Interop
@@ -240,10 +272,41 @@ from script.rdkit_bridge import SCRIPTFromMol, MolFromSCRIPT
 
 mol = Chem.MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O")
 script_str = SCRIPTFromMol(mol)
-print(f"SCRIPT: {script_str}")
+print(script_str)
 
 mol_back = MolFromSCRIPT(script_str)
-inchi = Chem.MolToInchi(mol_back)
+print(Chem.MolToInchi(mol_back))
+```
+
+### Working with the Typed IR
+
+```python
+from script.mol import BondType, StereoType, Reaction
+
+# Inspect bond types
+result = parser.parse("N->B(F)(F)F")
+core = result["molecule"]
+print(core.bonds[0].bond_type)          # BondType.DATIVE
+
+# Check stereo type
+result = parser.parse("[Pt@SP](Cl)(Cl)([NH3])[NH3]")
+atom = result["molecule"].atoms[0]
+print(atom.stereo_type)                 # StereoType.SQUARE_PLANAR
+
+# Reaction object
+result = parser.parse("CC>[Pd]>CCO")
+rxn = result["reaction"]               # Reaction object
+print(rxn.reactants, rxn.agents, rxn.products)
+
+# Polymer metadata
+result = parser.parse("{[CC]}<n:50-100>")
+mol = result["molecule"]
+print(mol.repeat_count)                 # (50, 100)
+
+# Fragment separator type
+result = parser.parse("[Na+]~[Cl-]")
+frags = result["molecule"]
+print(frags[1].fragment_separator)     # '~'
 ```
 
 ---
@@ -251,74 +314,110 @@ inchi = Chem.MolToInchi(mol_back)
 ## Project Structure
 
 ```
-script-notation/
+script/
 ├── script/                    # Core engine (RDKit-free)
-│   ├── mol.py                 # CoreAtom / CoreBond / CoreMolecule (V3 fields)
-│   ├── parser.py              # Lark-based SCRIPT parser (V3 interpreter)
+│   ├── mol.py                 # CoreAtom / CoreBond / CoreMolecule / BondType / StereoType / Reaction
+│   ├── parser.py              # Lark-based SCRIPT parser + interpreter
 │   ├── canonical.py           # DFS canonicalization engine
 │   ├── chiral.py              # Stereochemistry perception
 │   ├── cip.py                 # CIP priority calculator
-│   ├── state_machine.py       # Sandhi validation (Generative)
-│   ├── writer.py              # Native SCRIPT string writer
+│   ├── state_machine.py       # Sandhi validation (generative)
 │   ├── grammar.lark           # SCRIPT V3 LALR grammar
 │   ├── ranking.py             # Morgan invariant ranking
 │   ├── local_rings.py         # Topological ring resolution
+│   ├── peptide.py             # Biopolymer handler (AA + PTM + nucleotides + mods)
 │   └── rdkit_bridge.py        # Optional RDKit interop
-├── docs/                      # All documentation (domain guides + deep-dives)
+├── docs/
+│   ├── SPEC.md                # Complete SCRIPT specification
+│   ├── CIP_STEREO_THEORY.md   # Stereochemistry reconciliation
+│   ├── STANDALONE_ARCHITECTURE.md
 │   ├── organic_aromatic_stereo.md
 │   ├── metals_organometallics.md
 │   ├── materials_polymers_states.md
-│   ├── reactions_salts_radicals.md
-│   ├── SPEC.md                # Complete SCRIPT specification
-│   ├── CIP_STEREO_THEORY.md   # Stereochemistry reconciliation theory
-│   └── STANDALONE_ARCHITECTURE.md
+│   └── reactions_salts_radicals.md
 ├── tests/
 │   ├── test_parser.py
 │   └── test_rdkit_integration.py
 ├── examples/
 │   ├── basic_usage.py
 │   └── rdkit_demo.py
-├── benchmark.py               # 100-compound RDKit round-trip validation
-├── test_v3.py                 # V3 materials test suite (22 cases)
-└── LICENSE                    # MIT + Commons Clause
+├── benchmark.py
+└── LICENSE
 ```
 
 ---
 
-## Grammar Summary
+## Grammar (Abridged)
 
 ```
-start:          macroscopic_structure
-macroscopic_structure: [[context]]? (reaction|script) (| (reaction|script))*
-reaction:       script (>> | =>) script
-script:         component (. | ~ component)*
-component:      molecular_chain | peptide_chain | polymer | ring_closure
-molecular_chain: bond? atom_expr (bond? (atom_expr | local_ring | branch))*
-atom_expr:      (ELEMENT | [bracket_atom] | ATOM<state_block>) multiplier?
-state_block:    < INT | CHARGE | GEOMETRY | h INT | m | ~FLOAT | s:INT | * >
-bond:           -> | <- | - | = | # | : | =: | / | \ | > | *INT?
-ring_closure:   &INT (: | .)
-polymer:        {[ unit ]} (<n:INT> | <n:INT-INT> | n)?
-peptide_chain:  { AMINO_ACID (. AMINO_ACID)* }
+start:              macroscopic_structure
+macroscopic_structure: [[context]]? (reaction | script) (| (reaction | script))*
+reaction:           script (>> | =>) script
+script:             component (. | ~ component)*
+component:          molecular_chain | peptide_chain | polymer
+molecular_chain:    bond? atom_expr (bond? (atom_expr | local_ring | branch))*
+atom_expr:          (ORGANIC_ATOM | [bracket_atom] | [query_atom] | [*] | dhatu) multiplier?
+bracket_atom:       [ isotope? element chiral? hcount? charge? radical? ]
+query_atom:         query_primitive (, | ; query_primitive)*
+query_primitive:    !prim | #INT | R INT? | r INT? | v INT | a | A | ELEMENT
+bond:               -> | <- | - | = | # | : | =: | / | \ | > | *INT?
+ring_closure:       & INT (- | :)?      # - aliphatic, : aromatic, omitted = single
+polymer:            {[ unit ]} (<n:INT> | <n:INT-INT> | n)?
+peptide_chain:      { monomer (. monomer)* }
+monomer:            AMINO_ACID | PTM_CODE | NUCLEOTIDE | NUC_MOD_CODE
 ```
+
+The key grammar properties:
+
+- **LALR(1)** — no backtracking, linear parse time
+- **No ambiguity** — `&6-` ring closures and `.` fragment separators never collide (dot and dash are distinct tokens in their respective contexts)
+- **Lark-based** — grammar is auditable, diffable, and forkable
 
 ---
 
-## Comparison with Existing Notations
+## Comparison
 
 | Feature | SMILES | SELFIES | InChI | SCRIPT V3 |
 |---------|--------|---------|-------|-----------|
 | Canonical | No* | No | Yes | Yes |
 | Human-readable | Yes | No | No | Yes |
+| Hand-writable | Yes | No | No | Yes |
 | Invalid-proof | No | Yes | N/A | Yes (Sandhi) |
-| Stereochemistry | Fragile | Limited | Robust | Robust (Vak+CIP) |
+| Stereochemistry | Fragile | Limited | Robust | Robust (CIP) |
+| Non-tetrahedral stereo | No | No | Partial | Yes (@SP, @OH, @AX, @TB, @PY) |
 | Organometallics | Partial | No | No | Yes |
-| Alloys | No | No | No | Yes |
+| Alloys / non-stoichiometric | No | No | No | Yes |
 | Crystallography | No | No | Partial | Yes |
-| Surfaces | No | No | No | Yes |
+| Surfaces / interfaces | No | No | No | Yes |
 | Quantum states | No | No | No | Yes |
 | Polymers | No | No | No | Yes |
+| Nucleotide modifications | No | No | No | Yes (14 codes) |
+| Typed bond IR | No | N/A | N/A | Yes (BondType enum) |
+| Query atoms | SMARTS only | No | No | Yes |
 | RDKit-free core | No | No | N/A | Yes |
+
+*RDKit canonical SMILES is canonical within RDKit. Other toolkits produce different canonical forms.
+
+---
+
+## The "Boss Fights"
+
+To prove that topological back-counting scales to real complexity:
+
+**Taxol (Paclitaxel)** — 11 stereocenters, fused bridged ring system, ester chains, taxane scaffold. Parses and canonicalizes without global ring label tracking.
+
+**Strychnine** — 7 fused rings, 6 stereocenters, the molecule that famously broke several early automated structure elucidation systems. SCRIPT handles it with local ring closures and CIP stereo.
+
+**Glucose** — 4 stereocenters, pyranose ring, both anomers distinguishable. The stereo round-trip test that caught the R↔S inversion bug during development.
+
+---
+
+## Known Limitations
+
+- **Allenic stereo** — allene centres are detected and tagged `@AX`, but the stereo *bit* (Ra/Sa) cannot be populated from RDKit without 3D coordinates. The structural feature is recorded; the specific handedness requires geometry.
+- **Block copolymers** — `{[CC]}-b-{[styrene]}` junction notation is parsed but not yet expanded to atoms.
+- **Periodic structures** — MOFs, zeolites, unit cell connectivity. The `[[context]]` and `<~0.9>` occupancy system starts here but true periodic topology needs an adjacency model that does not yet exist.
+- **SMARTS-SCRIPT** — the query atom grammar covers `[#6]`, `[R]`, `[!N]`, `[v3]`, `[a]`, `[A]`. The full SMARTS feature set (`[$(...)],` recursive SMARTS, etc.) is out of scope for a representation standard; use RDKit SMARTS for that.
 
 ---
 
@@ -327,7 +426,7 @@ peptide_chain:  { AMINO_ACID (. AMINO_ACID)* }
 ```
 Sharma, S. (2026). SCRIPT: Structural Chemical Representation in Plain Text.
 A Deterministic Molecular Notation System with Materials & State Expansion (V3).
-https://github.com/script-notation/script
+https://github.com/sangeet01/script
 ```
 
 ---
@@ -338,16 +437,16 @@ https://github.com/script-notation/script
 
 Free for academic research, personal projects, and non-commercial open-source development. Commercial use requires a separate licensing agreement.
 
-See `LICENSE` for full terms.
-
 ---
 
-## Contact
+## Contributing
 
-Developed by **Sangeet Sharma** and the SCRIPT team.
+1. Fork the repo
+2. Create a feature branch
+3. Add tests — the benchmark suite is the ground truth
+4. Submit a pull request
 
-- GitHub Issues: [script-notation/script/issues](https://github.com/script-notation/script/issues)
-- Documentation: See `docs/` directory
+See `docs/SPEC.md` for the full grammar specification and `docs/CIP_STEREO_THEORY.md` for the stereochemistry reconciliation theory.
 
 ---
 
