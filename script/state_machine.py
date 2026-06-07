@@ -41,6 +41,7 @@ class GenerativeStateMachine:
         self.is_bracket: Dict[int, bool] = {} # idx -> was in brackets
         self.parents: Dict[int, int] = {} # idx -> parent_idx in DFS tree
         self.component_starts: List[int] = [] # Indices where new components start
+        self.valence_violations: List[Tuple[int, int, int]] = [] # (u_idx, v_idx, order) on Sandhi reject
 
     def new_component(self):
         """Reset the cursor to start a new disconnected component (Sandhi break)."""
@@ -102,8 +103,10 @@ class GenerativeStateMachine:
         
         # If there's a current atom, we implicitly create a bond
         if self.current_atom_idx is not None:
-            self.add_bond(self.current_atom_idx, atom_idx, bond_order,
+            ok = self.add_bond(self.current_atom_idx, atom_idx, bond_order,
                           bond_dir=bond_dir, bond_class=bond_class)
+            if not ok:
+                self.valence_violations.append((self.current_atom_idx, atom_idx, bond_order))
             self.parents[atom_idx] = self.current_atom_idx
             
         self.current_atom_idx = atom_idx

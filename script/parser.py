@@ -94,6 +94,17 @@ class SCRIPTInterpreter(Interpreter):
                 self.state = GenerativeStateMachine()
                 self.visit(child)
                 self.state.finalize_valences()
+                # Sandhi gate: propagate any valence violations recorded during
+                # add_atom -> add_bond as a hard parse failure.
+                if self.state.valence_violations:
+                    u, v, order = self.state.valence_violations[0]
+                    atoms = self.state.mol.atoms
+                    sym_u = atoms[u].symbol if u < len(atoms) else '?'
+                    sym_v = atoms[v].symbol if v < len(atoms) else '?'
+                    raise ValueError(
+                        f"Sandhi violation: bond {sym_u}({u})-{sym_v}({v}) "
+                        f"order={order} exceeds maximum valence"
+                    )
                 mol = self.state.mol
                 # Apply pending separator from the preceding fragment_separator
                 if separators:

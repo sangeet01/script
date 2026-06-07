@@ -333,7 +333,17 @@ def MolFromSCRIPT(script_string: str) -> Optional[Chem.Mol]:
 def SCRIPTFromMol(rd_mol) -> Optional[str]:
     """Helper for testing: RDKit Mol -> Canonical SCRIPT string."""
     from .canonical import SCRIPTCanonicalizer
-    core = from_rdkit(rd_mol)
+    # Normalize atom ordering to RDKit canonical ranks before DFS traversal.
+    # RDKit guarantees a canonical SMILES string but NOT a canonical internal
+    # atom index order — the same molecule parsed from two different SMILES
+    # inputs may have different atom orderings, making SCRIPTFromMol sensitive
+    # to the input SMILES rather than the molecular structure.
+    # Renumbering to canonical ranks here ensures the same molecule always
+    # enters from_rdkit with the same atom order.
+    ranks = list(Chem.CanonicalRankAtoms(rd_mol))
+    new_order = sorted(range(rd_mol.GetNumAtoms()), key=lambda i: ranks[i])
+    mol_renum = Chem.RenumberAtoms(rd_mol, new_order)
+    core = from_rdkit(mol_renum)
     canonicalizer = SCRIPTCanonicalizer()
     return canonicalizer.canonicalize_mol(core)
 
