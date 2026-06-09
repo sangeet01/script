@@ -176,7 +176,7 @@ class SCRIPTInterpreter(Interpreter):
                     elif sub_data == 'polymer_suffix':
                         self._parse_polymer_suffix(sub)
             elif data == 'polymer_block':
-                pass  # block copolymer junction — not yet implemented
+                self._parse_polymer_block(child)
 
     def peptide_chain(self, tree):
         """Handle peptide_chain whether as direct component or inside molecular_chain."""
@@ -194,7 +194,53 @@ class SCRIPTInterpreter(Interpreter):
             elif sub == 'polymer_suffix':
                 self._parse_polymer_suffix(child)
 
-    def branch_content(self, tree):
+    def polymer_block(self, tree):
+        """Handle top-level polymer_block node (block copolymer at component level).
+
+        The grammar rule is:
+            polymer_block: polymer polymer_junction polymer (polymer_junction polymer)*
+
+        Each polymer child is parsed as its own unit; junction tokens are extracted
+        to set block_kind on each resulting PolymerBlock object.
+        """
+        from lark import Tree as LTree, Token as LToken
+        from .mol import PolymerBlock
+        from .state_machine import GenerativeStateMachine
+
+        _KIND_MAP = {
+            '-b-': 'diblock',
+            '-a-': 'alternating', '-alt-': 'alternating',
+            '-r-': 'random', '-ran-': 'random', '-stat-': 'random',
+            '-g-': 'graft',
+        }
+
+        current_kind = ''
+        for child in tree.children:
+            if isinstance(child, LToken):
+                current_kind = _KIND_MAP.get(str(child), str(child).strip('-'))
+                continue
+            if not isinstance(child, LTree):
+                continue
+            node_data = child.data.lstrip('!')
+            if node_data == 'polymer':
+                # Parse this block unit in its own state machine
+                saved_state = self.state
+                self.state = GenerativeStateMachine()
+                self.visit(child)
+                self.state.finalize_valences()
+                unit_mol = self.state.mol
+                self.state = saved_state
+
+                block = PolymerBlock(
+                    unit=unit_mol,
+                    repeat_count=unit_mol.repeat_count,
+                    block_kind=current_kind,
+                )
+                self.state.mol.polymer_blocks.append(block)
+                if self.state.mol.block_topology is None and current_kind:
+                    self.state.mol.block_topology = current_kind
+
+
         self.visit_children(tree)
 
     def bond(self, tree):
@@ -471,6 +517,105 @@ class SCRIPTInterpreter(Interpreter):
                     self.state.mol.repeat_count = int(val)
                 except ValueError:
                     self.state.mol.repeat_count = 'n'  # symbolic
+
+    def _parse_polymer_block(self, block_tree) -> None:
+        """
+        Handle a polymer_block junction node in a block copolymer.
+
+        The grammar produces polymer_block when consecutive polymer units are
+        joined by a block-junction token (e.g. '-b-', '-alt-', '-ran-', '-g-').
+        Each block is parsed into its own CoreMolecule unit and stored as a
+        PolymerBlock in the parent molecule's polymer_blocks list.
+
+        Recognised junction keywords:
+            diblock / b     -> 'diblock'
+            triblock        -> 'triblock'
+            alternating/alt -> 'alternating'
+            random/ran      -> 'random'
+            graft/g         -> 'graft'
+
+        The parent CoreMolecule (self.state.mol) receives:
+            .polymer_blocks  - appended with the new PolymerBlock
+            .block_topology  - set to the junction kind string
+        """
+        from .mol import PolymerBlock, CoreMolecule
+        from .state_machine import GenerativeStateMachine
+        from lark import Token as LarkToken
+
+        # Map grammar tokens / literal strings to canonical kind names
+        _KIND_MAP = {
+            'b': 'diblock', 'diblock': 'diblock',
+            'triblock': 'triblock',
+            'alt': 'alternating', 'alternating': 'alternating',
+            'ran': 'random', 'random': 'random',
+            'g': 'graft', 'graft': 'graft',
+        }
+
+        parent_mol = self.state.mol
+        block_kind = ''
+        unit_mol = None
+        block_repeat: Any = None
+
+        for child in block_tree.children:
+            if isinstance(child, LarkToken):
+                raw = str(child).strip('-').lower()
+                block_kind = _KIND_MAP.get(raw, raw)
+                continue
+            if not isinstance(child, Tree):
+                continue
+            sub_data = child.data.lstrip('!')
+
+            if sub_data == 'polymer_unit':
+                # Parse the block's repeat unit into a fresh graph
+                saved_state = self.state
+                self.state = GenerativeStateMachine()
+                self.visit_children(child)
+                self.state.finalize_valences()
+                unit_mol = self.state.mol
+                self.state = saved_state
+
+            elif sub_data == 'polymer_suffix':
+                # Extract per-block repeat count from the suffix node
+                from lark import Token as LT
+                for sc in child.children:
+                    if not isinstance(sc, Tree): continue
+                    ss = sc.data.lstrip('!')
+                    if ss == 'polymer_multiplier':
+                        ints = [int(str(t)) for t in sc.scan_values(
+                            lambda t: isinstance(t, LT) and t.type == 'INT')]
+                        if len(ints) == 1:
+                            block_repeat = ints[0]
+                        elif len(ints) == 2:
+                            block_repeat = (ints[0], ints[1])
+                    elif ss == 'repeat_spec':
+                        tokens = list(sc.scan_values(lambda t: True))
+                        val = str(tokens[0]) if tokens else 'n'
+                        try:
+                            block_repeat = int(val)
+                        except ValueError:
+                            block_repeat = 'n'
+
+            elif sub_data in ('polymer', 'polymer_block'):
+                # Nested or chained block — recurse so triblock etc. work
+                if sub_data == 'polymer_block':
+                    self._parse_polymer_block(child)
+                else:
+                    saved_state = self.state
+                    self.state = GenerativeStateMachine()
+                    self.visit(child)
+                    self.state.finalize_valences()
+                    unit_mol = self.state.mol
+                    self.state = saved_state
+
+        if unit_mol is not None:
+            block = PolymerBlock(unit=unit_mol,
+                                 repeat_count=block_repeat,
+                                 block_kind=block_kind)
+            parent_mol.polymer_blocks.append(block)
+            # Update topology on parent: first block wins if already set
+            if parent_mol.block_topology is None and block_kind:
+                parent_mol.block_topology = block_kind
+
 
     def _get_multiplier(self, tree) -> int:
         for child in tree.children:

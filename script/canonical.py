@@ -49,7 +49,12 @@ class SCRIPTCanonicalizer:
         return '.'.join(fragment_strings)
 
     def _find_components(self, mol: CoreMolecule) -> List[List[int]]:
-        """Find all connected components via BFS."""
+        """Find all connected components via BFS.
+
+        For periodic molecules, bonds with non-zero translation vectors are
+        treated as connecting (so the whole lattice is one component) but BFS
+        does not follow them a second time to avoid infinite traversal.
+        """
         num_atoms = len(mol.atoms)
         visited = set()
         components = []
@@ -62,15 +67,39 @@ class SCRIPTCanonicalizer:
             while queue:
                 node = queue.pop(0)
                 component.append(node)
-                for nbr, _ in mol.adj.get(node, []):
+                for nbr, bond_idx in mol.adj.get(node, []):
+                    # For periodic bonds, only cross the boundary once.
+                    # The bond is still used for connectivity, but we do
+                    # not enqueue the neighbour if it was already visited.
+                    bond = mol.bonds[bond_idx]
+                    is_periodic_bond = (getattr(bond, 'translation', (0,0,0)) != (0,0,0))
                     if nbr not in visited:
-                        visited.add(nbr)
-                        queue.append(nbr)
+                        if not is_periodic_bond:
+                            visited.add(nbr)
+                            queue.append(nbr)
+                        else:
+                            # Periodic bond to an unvisited image — include as
+                            # same component but do not recurse into the image.
+                            visited.add(nbr)
+                            component.append(nbr)
             components.append(component)
         return components
 
     def _canonicalize_component(self, mol: CoreMolecule, atom_indices: List[int]) -> Optional[str]:
-        """Canonicalize a single connected component."""
+        """Canonicalize a single connected component.
+
+        If the molecule is periodic (mol.is_periodic is True), full 3-D lattice
+        canonicalization is not yet implemented.  A sentinel prefix '~P~' is
+        prepended to the string so callers can detect this case and route to a
+        lattice-aware engine.
+        """
+        periodic_prefix = ''
+        if getattr(mol, 'is_periodic', False):
+            # Flag this output as a unit-cell fingerprint, not a full periodic SCRIPT.
+            # The DFS below still runs on the quotient graph (periodic bonds are
+            # excluded from ring detection) to produce a best-effort unit-cell string.
+            periodic_prefix = '~P~'
+
         # 1. Ranking (Universal)
         rank_map = calculate_ranks(mol)
         num_atoms = len(mol.atoms)
@@ -102,20 +131,30 @@ class SCRIPTCanonicalizer:
         ring_counter = [0]
         
         result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
-        
-        return result
+
+        return periodic_prefix + result if result else result
     
     def _find_ring_bonds(self, mol: CoreMolecule, atom_idx, visited, from_bond_idx, ring_bonds):
-        """First pass: identify which bonds are ring closures."""
+        """First pass: identify which bonds are ring closures.
+
+        Periodic bonds (translation != (0,0,0)) are lattice edges, not ring
+        closures in the quotient graph.  They are excluded from ring_bonds so
+        that the DFS string builder does not emit Anubandha ring notation for
+        lattice-spanning bonds.
+        """
         visited.add(atom_idx)
-        
+
         neighbors = []
         for nbr_idx, bond_idx in mol.adj.get(atom_idx, []):
-            if bond_idx != from_bond_idx:
-                neighbors.append((mol.atoms[nbr_idx].rank, nbr_idx, bond_idx)) # Use atom rank for sorting
-                
+            if bond_idx == from_bond_idx:
+                continue
+            bond = mol.bonds[bond_idx]
+            if getattr(bond, 'translation', (0,0,0)) != (0,0,0):
+                continue  # skip periodic boundary bonds in ring detection
+            neighbors.append((mol.atoms[nbr_idx].rank, nbr_idx, bond_idx))
+
         neighbors.sort(key=lambda x: (x[0], x[1]))
-        
+
         for _, nbr_idx, bond_idx in neighbors:
             if nbr_idx in visited:
                 ring_bonds.add(bond_idx)
@@ -280,7 +319,11 @@ class SCRIPTCanonicalizer:
         elif stereo_t == StereoType.OCTAHEDRAL:
             chiral_sym = "@OH"
         elif stereo_t == StereoType.ATROPISOMER:
-            chiral_sym = "@AX"
+            # Route through get_chiral_symbol so that the geometry-resolved
+            # @AX1 / @AX2 parity is used.  Falls back to bare "@AX" if the
+            # dihedral could not be computed (no 3D coords available).
+            resolved = get_chiral_symbol(atom_idx, ordered_neighbors, mol, ranks)
+            chiral_sym = resolved if resolved else "@AX"
         elif stereo_t == StereoType.TRIG_BIPYRAMIDAL:
             chiral_sym = "@TB"
         elif stereo_t == StereoType.PYRAMIDAL:

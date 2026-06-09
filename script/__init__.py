@@ -9,6 +9,7 @@ from .parser import SCRIPTParser
 from .canonical import canonicalize_SCRIPT
 from .validator import is_valid_SCRIPT
 from .peptide import expand_peptide_to_script, is_valid_monomer
+from .mol import CoreMolecule, CoreBond, CoreAtom, BondType, StereoType, PolymerBlock
 
 # Convenience function
 def parse_script(script_string: str):

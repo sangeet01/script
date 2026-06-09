@@ -3,6 +3,7 @@ Core SCRIPT Graph Representation
 Lightweight, RDKit-independent molecule data structure.
 """
 
+from __future__ import annotations
 from typing import List, Dict, Tuple, Optional, Any
 from enum import IntEnum
 
@@ -81,7 +82,8 @@ class CoreAtom:
 class CoreBond:
     def __init__(self, begin_atom_idx: int, end_atom_idx: int,
                  bond_type: Any, bond_dir: int = 0,
-                 hapticity: int = 0, bond_class: str = ""):
+                 hapticity: int = 0, bond_class: str = "",
+                 translation: Tuple[int, int, int] = (0, 0, 0)):
         self.begin_atom_idx = begin_atom_idx
         self.end_atom_idx = end_atom_idx
         # Normalise to BondType enum if an int is passed (backward compat)
@@ -96,6 +98,35 @@ class CoreBond:
         self.bond_class = bond_class  # "dative","rev_dative","coordinate","star",""
         self.is_rc = False            # ring closure bond
         self.is_aromatic = False      # part of aromatic/resonant system
+        # Periodic topology: integer lattice translation vector (tx, ty, tz).
+        # (0,0,0) for all intracell bonds; non-zero for bonds that cross unit-cell
+        # boundaries in MOF/zeolite frameworks.  Ignored for non-periodic molecules.
+        self.translation: Tuple[int, int, int] = translation
+
+class PolymerBlock:
+    """
+    One segment in a block copolymer.
+
+    A CoreMolecule that represents a block copolymer (e.g. ABA triblock)
+    stores a list of PolymerBlock objects in its polymer_blocks attribute.
+    Each block has:
+      - unit:         the CoreMolecule for the repeat unit of this block
+      - repeat_count: int, (min,max) tuple, or 'n' (symbolic)
+      - block_kind:   junction token from the grammar
+                      ('diblock', 'alternating', 'random', 'graft', or '')
+    """
+    def __init__(self, unit: 'CoreMolecule',
+                 repeat_count: Any = None,
+                 block_kind: str = ''):
+        self.unit: 'CoreMolecule' = unit
+        self.repeat_count: Any = repeat_count
+        self.block_kind: str = block_kind
+
+    def __repr__(self) -> str:
+        return ("PolymerBlock(kind=" + repr(self.block_kind) +
+                ", repeat=" + repr(self.repeat_count) +
+                ", atoms=" + str(len(self.unit.atoms)) + ")")
+
 
 class CoreMolecule:
     """
@@ -105,7 +136,7 @@ class CoreMolecule:
     def __init__(self):
         self.atoms: List[CoreAtom] = []
         self.bonds: List[CoreBond] = []
-        self.adj: Dict[int, List[int]] = {}  # idx -> list of (neighbor_idx, bond_idx)
+        self.adj: Dict[int, List[Tuple[int, int]]] = {}  # idx -> list of (neighbor_idx, bond_idx)
         self.chiral_centers: Dict[int, int] = {} # atom_idx -> chirality_bit (0:CCW, 1:CW)
         self.macroscopic_context: Optional[str] = None
 
@@ -113,6 +144,16 @@ class CoreMolecule:
         self.fragment_separator: str = "."      # "." solvate/salt | "~" ionic pair
         self.repeat_count: Optional[Any] = None # polymer: int, (min,max) tuple, or None
         self.phase_boundary: Optional[str] = None  # phase label when "|" is used
+        # Block copolymer support: list of PolymerBlock segments
+        self.polymer_blocks: List[PolymerBlock] = []
+        # Junction type: 'diblock', 'triblock', 'alternating', 'random', 'graft', or None
+        self.block_topology: Optional[str] = None
+        # 3-D periodic topology (MOFs, zeolites, coordination polymers).
+        # lattice_vectors: 3x3 row-vector matrix ((a1,a2,a3),(b1,b2,b3),(c1,c2,c3))
+        #   in Angstroms.  None for non-periodic molecules.
+        self.lattice_vectors: Optional[Tuple[Tuple[float,float,float], ...]] = None
+        # is_periodic: True when at least one bond has a non-zero translation vector.
+        self.is_periodic: bool = False
 
     def add_atom(self, atom: CoreAtom) -> int:
         idx = len(self.atoms)
@@ -121,15 +162,19 @@ class CoreMolecule:
         return idx
 
     def add_bond(self, begin_idx: int, end_idx: int, bond_type: Any,
-                 bond_dir: int = 0, hapticity: int = 0, bond_class: str = ""):
+                 bond_dir: int = 0, hapticity: int = 0, bond_class: str = "",
+                 translation: Tuple[int, int, int] = (0, 0, 0)):
         bond_idx = len(self.bonds)
         bond = CoreBond(begin_idx, end_idx, bond_type, bond_dir,
-                        hapticity=hapticity, bond_class=bond_class)
+                        hapticity=hapticity, bond_class=bond_class,
+                        translation=translation)
         self.bonds.append(bond)
         self.adj[begin_idx].append((end_idx, bond_idx))
         self.adj[end_idx].append((begin_idx, bond_idx))
+        if translation != (0, 0, 0):
+            self.is_periodic = True
 
-    def add_bond_obj(self, bond: 'CoreBond') -> None:
+    def add_bond_obj(self, bond: CoreBond) -> None:
         """Add a pre-constructed CoreBond object. Used by PeptideHandler."""
         bond_idx = len(self.bonds)
         self.bonds.append(bond)
@@ -150,8 +195,6 @@ class CoreMolecule:
                 return self.bonds[bond_idx]
         return None
 
-
-
 class Reaction:
     """
     Represents a SCRIPT reaction: reactants >> products (with optional agents).
@@ -164,9 +207,9 @@ class Reaction:
         CC>[Pd]>CCO  ->  Reaction(reactants=[CC], agents=[Pd], products=[CCO])
     """
     def __init__(self,
-                 reactants: List['CoreMolecule'],
-                 products: List['CoreMolecule'],
-                 agents: Optional[List['CoreMolecule']] = None):
+                 reactants: List[CoreMolecule],
+                 products: List[CoreMolecule],
+                 agents: Optional[List[CoreMolecule]] = None):
         self.reactants: List[CoreMolecule] = reactants
         self.products:  List[CoreMolecule] = products
         self.agents:    List[CoreMolecule] = agents or []

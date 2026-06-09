@@ -16,8 +16,22 @@ def get_chiral_symbol(center_idx: int, ordered_neighbors: List[int],
     """
     Returns '@' or '@@' for the atom at center_idx.
 
+    Handles both tetrahedral centres (4 ordered_neighbors) and
+    allene axial centres (@AX) stored via _is_allene_centre flag.
     Always uses CIP-based transformation for consistency.
     """
+    from .mol import StereoType
+    atom = mol.atoms[center_idx]
+
+    # Allene axial centre: parity is stored directly in chiral_centers
+    # with ref frame [s1, t1, t2, s2] in _chiral_ref_nbrs.
+    if getattr(atom, '_is_allene_centre', False):
+        bit = mol.chiral_centers.get(center_idx)
+        if bit is None:
+            return ""
+        # Emit @AX1 (CW) or @AX2 (CCW) to distinguish; bare @AX means unknown.
+        return "@AX1" if bit == 1 else "@AX2"
+
     bit = mol.chiral_centers.get(center_idx)
     if bit is None:
         return ""
@@ -75,7 +89,7 @@ def get_chiral_symbol(center_idx: int, ordered_neighbors: List[int],
     return "@" if is_ccw else "@@"
 
 
-def perceive_chirality(mol, ranks: List[int], dfs_neighbor_orders: dict = None):
+def perceive_chirality(mol, ranks: List[int], dfs_neighbor_orders: Optional[dict] = None):
     """
     Geometry-based Stereochemical Perception.
 

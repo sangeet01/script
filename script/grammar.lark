@@ -64,6 +64,7 @@ fragment_separator: "." | "~"
 
 component: peptide_chain
          | polymer
+         | polymer_block
          | molecular_chain
          | ring_closure          // Standalone Anubandha ring (v1.5)
 
@@ -179,7 +180,9 @@ isotope: INT
 chiral: "@@"        // Tetrahedral S   (must precede "@" for longest match)
       | "@SP"       // Square planar
       | "@OH"       // Octahedral
-      | "@AX"       // Axial / atropisomer
+      | "@AX1"      // Allene / atropisomer CW   (geometry-resolved)
+      | "@AX2"      // Allene / atropisomer CCW  (geometry-resolved)
+      | "@AX"       // Axial / atropisomer (unresolved, no 3D coords)
       | "@TB"       // Trigonal bipyramidal
       | "@PY"       // Pyramidal
       | "@"         // Tetrahedral R
@@ -329,28 +332,43 @@ bridge: "[" LETTER "]"
 // =============================================================
 // V3.3 EXTENDED POLYMERS (Abhyasa - Stochastic Copolymers)
 //
-// Syntax (polymers use {[ ]} to avoid conflict with peptide { }):
-//   {[CCCO]}n                    - simple repeating unit
-//   {[CCCO]}<n:50>               - defined-length block
-//   {[CCCO]}<n:50-100>           - stochastic range
-//   {[CCCO]}<n:50> -b- {[c1ccccc1CC]}<n:100>   - NOT supported inline (use component-level)
+// Simple repeating unit:
+//   {[CCCO]}n                         simple repeat
+//   {[CCCO]}<n:50>                    exact length
+//   {[CCCO]}<n:50-100>                stochastic range
 //
-// polymer_block uses {[ ]} inside component rules to distinguish
-// from bracket_atom (which is [ ] inside molecular_chain).
+// Block copolymer (polymer_block at component level):
+//   {[CCCO]}<n:50> -b- {[c1ccccc1CC]}<n:100>
+//
+// polymer_block is a standalone component so that multi-block
+// sequences parse without inline LALR ambiguity.
 // =============================================================
 polymer: "{[" polymer_unit "]}" polymer_suffix?
 
 polymer_unit: molecular_chain | peptide_chain
 
-// Suffix: repeat count or block junction
+// A block copolymer: two or more polymer units joined by a junction keyword
+// Examples:
+//   {[CC]}<n:50> -b- {[CCCO]}<n:100>
+//   {[CC]}<n:50> -alt- {[N]}<n:50>
+polymer_block: polymer polymer_junction polymer (polymer_junction polymer)*
+
+// Suffix: repeat count or block junction (for inline multi-block inside a single polymer)
 polymer_suffix: polymer_multiplier (polymer_junction polymer_multiplier)*
               | repeat_spec
 
 polymer_multiplier: "<n:" INT ">"
                   | "<n:" INT "-" INT ">"
 
-// Block (-b-), random (-r-), alternating (-a-) junctions
-polymer_junction: "-b-" | "-r-" | "-a-"
+// Block junctions - full set including IUPAC aliases
+// -b-   diblock
+// -alt- alternating  (alias: -a-)
+// -ran- random       (alias: -r-, -stat-)
+// -g-   graft
+polymer_junction: "-b-"
+                | "-alt-" | "-a-"
+                | "-ran-" | "-r-" | "-stat-"
+                | "-g-"
 
 // Repeat spec for simple polymers: {[unit]}n, {[unit]}50, {[unit]}0_7
 repeat_spec: "n"
