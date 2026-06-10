@@ -10,10 +10,12 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from script.rdkit_bridge import (
-    MolFromSCRIPT, SCRIPTFromMol, canonicalize_SCRIPT, 
-    is_valid_SCRIPT, script_to_smiles, smiles_to_script,
+    MolFromSCRIPT, SCRIPTFromMol,
+    script_to_smiles, smiles_to_script,
     RDKIT_AVAILABLE
 )
+from script.canonical import canonicalize_SCRIPT
+from script.validator import is_valid_SCRIPT
 
 # Skip all tests if RDKit not available
 pytestmark = pytest.mark.skipif(not RDKIT_AVAILABLE, reason="RDKit not available")
@@ -139,8 +141,8 @@ if __name__ == "__main__":
         
         print("Testing SMILES conversion...")
         test.test_smiles_conversion()
-        print("✓ SMILES conversion works")
+        print(" SMILES conversion works")
         
-        print("\n🎉 All RDKit integration tests passed!")
+        print("\n All RDKit integration tests passed!")
     else:
         print("RDKit not available - install with: pip install rdkit")
