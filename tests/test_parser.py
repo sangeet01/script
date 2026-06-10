@@ -109,8 +109,8 @@ class TestSCRIPTParser:
     def test_polymer_mode(self):
         """Test polymer notation parsing"""
         test_cases = [
-            "{CC}n",      # polyethylene
-            "{CC}100",    # 100-mer
+            "{[CC]}n",       # polyethylene (symbolic repeat)
+            "{[CC]}<n:100>", # 100-mer (exact count)
         ]
         
         for script in test_cases:
