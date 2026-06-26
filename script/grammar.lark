@@ -1,4 +1,4 @@
-// SCRIPT.lark - Complete Grammar for SCRIPT 2.0
+// SCRIPT.lark - Complete Grammar for SCRIPT 2.1
 // Structural Chemical Representation in Plain Text
 // February 2026 - V3 Materials & State Expansion
 //
@@ -40,7 +40,8 @@ macroscopic_structure: macroscopic_context VBAR? (reaction | script) (VBAR (reac
                      | (reaction | script) (VBAR (reaction | script))*
 
 // V3.2 Crystallography (Sthana) - space group / unit cell label
-macroscopic_context: "[[" CONTEXT_LABEL "]]"
+// Optional lattice parameters: [[Rutile;4.593,4.593,2.959,90,90,90]]
+macroscopic_context: "[[" CONTEXT_LABEL (";" lattice_params)? "]]"
 CONTEXT_LABEL: /[A-Za-z0-9_-]+/
 
 // V3.5 Surface & Interface Chemistry (Adhikarana) - phase separator
@@ -75,7 +76,7 @@ component: peptide_chain
 // like >C=O adsorbed on surfaces, or haptic *5 in ferrocene).
 // Then: atom_expr followed by (bond? atom_or_ring_or_branch)*
 // =============================================================
-molecular_chain: bond? atom_expr (bond? (atom_expr | local_ring | branch))*
+molecular_chain: maybe_periodic_bond? atom_expr (maybe_periodic_bond? (atom_expr | local_ring | branch))*
 
 atom_expr: (ORGANIC_ATOM | bracket_atom | dhatu | WILDCARD) multiplier?
 multiplier: INT
@@ -379,8 +380,34 @@ RATIO: INT "_" INT
 
 
 // =============================================================
-// TERMINALS
+// V3.6 PERIODIC TOPOLOGY (LQG / Crystal / MOF support)
+//
+// Periodic bonds encode cross-unit-cell connectivity using an
+// integer lattice translation vector (tx, ty, tz).
+// Based on the Labeled Quotient Graph (LQG) formalism.
+//
+// Syntax:  bond @tx,ty,tz
+// Examples:
+//   Ti->@0,0,1O    dative bond with +c translation (MOF pillar)
+//   Fe-@1,0,0Fe   single bond crossing +a unit cell boundary
+//   C-@0,0,0C     intracell bond (same as plain C-C)
+//
+// maybe_periodic_bond: a bond optionally followed by a translation vector.
+// This single rule avoids LALR(1) conflicts that arise from (bond | periodic_bond).
+// The @ character after a bond token is unambiguous because @ only appears
+// inside bracket atoms in all other grammar contexts.
+//
+// Lattice parameters encoded in macroscopic_context:
+//   [[Rutile;4.593,4.593,2.959,90,90,90]]
+//    = label + a(Å), b(Å), c(Å), α(°), β(°), γ(°)
 // =============================================================
+maybe_periodic_bond: bond ("@" signed_int "," signed_int "," signed_int)?
+
+signed_int: "-" INT  -> neg_int
+          | INT      -> pos_int
+
+// Lattice parameters: a, b, c in Angstroms; alpha, beta, gamma in degrees
+lattice_params: FLOAT "," FLOAT "," FLOAT "," FLOAT "," FLOAT "," FLOAT
 DIGIT: "0".."9"
 LETTER: "A".."Z"
 
