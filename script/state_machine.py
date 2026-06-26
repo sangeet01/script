@@ -55,7 +55,8 @@ class GenerativeStateMachine:
                  is_bracket: bool = False, is_aromatic: bool = False,
                  mapping: int = 0, occupancy: float = 1.0, 
                  spin: int = 0, is_excited: bool = False,
-                 bond_class: str = "", radical: int = 0) -> int:
+                 bond_class: str = "", radical: int = 0,
+                 translation: tuple = (0, 0, 0)) -> int:
         """Add an atom and move the state pointer to it."""
         is_wildcard = (symbol == '*')
         atomic_num = 0 if is_wildcard else self._get_atomic_num(symbol)
@@ -104,7 +105,8 @@ class GenerativeStateMachine:
         # If there's a current atom, we implicitly create a bond
         if self.current_atom_idx is not None:
             ok = self.add_bond(self.current_atom_idx, atom_idx, bond_order,
-                          bond_dir=bond_dir, bond_class=bond_class)
+                          bond_dir=bond_dir, bond_class=bond_class,
+                          translation=translation)
             if not ok:
                 self.valence_violations.append((self.current_atom_idx, atom_idx, bond_order))
             self.parents[atom_idx] = self.current_atom_idx
@@ -113,7 +115,8 @@ class GenerativeStateMachine:
         return atom_idx
 
     def add_bond(self, u_idx: int, v_idx: int, order: int, bond_dir: int = 0,
-                 hapticity: int = 0, bond_class: str = "") -> bool:
+                 hapticity: int = 0, bond_class: str = "",
+                 translation: tuple = (0, 0, 0)) -> bool:
         """
         Add or upgrade a bond between u and v with 'Sandhi' valence guards.
         bond_class maps to BondType for semantically-typed bonds.
@@ -135,7 +138,8 @@ class GenerativeStateMachine:
             # Check not already bonded
             if self.mol.get_bond(u_idx, v_idx) is None:
                 self.mol.add_bond(u_idx, v_idx, special_type, bond_dir=bond_dir,
-                                  hapticity=hapticity, bond_class=bond_class)
+                                  hapticity=hapticity, bond_class=bond_class,
+                                  translation=translation)
                 self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
                 self.mol.atoms[v_idx]._initial_nbrs.append(u_idx)
                 # Dative counts as 1 for valence tracking
@@ -220,7 +224,8 @@ class GenerativeStateMachine:
             else: bt = 1
 
         self.mol.add_bond(u_idx, v_idx, bt, bond_dir=bond_dir,
-                          hapticity=hapticity, bond_class=bond_class)
+                          hapticity=hapticity, bond_class=bond_class,
+                          translation=translation)
         
         # Track "Vak Order" for chirality resolution
         self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
