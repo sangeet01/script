@@ -28,6 +28,7 @@ class SCRIPTInterpreter(Interpreter):
         self._next_bond_dir = 0
         self._next_hapticity = 0
         self._next_bond_class = ""
+        self._next_translation = (0, 0, 0)   # V3.6 periodic topology
         
     def entry(self, tree):
         res = self.visit_children(tree)
@@ -36,6 +37,7 @@ class SCRIPTInterpreter(Interpreter):
 
     def macroscopic_structure(self, tree):
         context = None
+        lattice = None   # V3.6: lattice vectors from context block
         entities = []
         phase_labels = []  # labels between VBAR tokens
 
@@ -47,22 +49,43 @@ class SCRIPTInterpreter(Interpreter):
             if not isinstance(child, Tree): continue
             t = child.data.lstrip('!')
             if t == 'macroscopic_context':
+                lattice = None
                 for tok in child.children:
                     if isinstance(tok, Token) and tok.type == 'CONTEXT_LABEL':
                         context = str(tok)
-                        break
-                    elif isinstance(tok, Token):
-                        val = str(tok)
-                        if val not in ('[[', ']]'):
-                            context = val
-                            break
+                    elif isinstance(tok, Tree) and tok.data.lstrip('!') == 'lattice_params':
+                        # Parse a,b,c,alpha,beta,gamma from 6 FLOAT tokens
+                        floats = [float(str(f)) for f in tok.scan_values(
+                            lambda x: isinstance(x, Token) and x.type == 'FLOAT')]
+                        if len(floats) == 6:
+                            a, b, c, alpha, beta, gamma = floats
+                            import math
+                            # Compute 3x3 lattice vectors from cell parameters
+                            ar = math.radians(alpha)
+                            br = math.radians(beta)
+                            gr = math.radians(gamma)
+                            cos_a = math.cos(ar); cos_b = math.cos(br)
+                            cos_g = math.cos(gr); sin_g = math.sin(gr)
+                            vol_fac = math.sqrt(max(0, 1 - cos_a**2 - cos_b**2 - cos_g**2
+                                                    + 2*cos_a*cos_b*cos_g))
+                            lattice = (
+                                (a,           0,                                       0),
+                                (b*cos_g,     b*sin_g,                                 0),
+                                (c*cos_b,     c*(cos_a - cos_b*cos_g)/sin_g,
+                                              c*vol_fac/sin_g),
+                            )
+                    elif isinstance(tok, Token) and tok.type not in ('[[', ']]', ';'):
+                        if context is None:
+                            context = str(tok)
             elif t in ('reaction', 'script'):
                 mols = self.visit(child)
-                def apply_context(obj, ctx=context):
+                def apply_context(obj, ctx=context, lat=lattice):
                     if isinstance(obj, list):
-                        for item in obj: apply_context(item, ctx)
+                        for item in obj: apply_context(item, ctx, lat)
                     elif isinstance(obj, CoreMolecule):
                         obj.macroscopic_context = ctx
+                        if lat is not None:
+                            obj.lattice_vectors = lat
                 apply_context(mols)
 
                 # Tag phase boundary: each entity after the first gets a label
@@ -153,7 +176,11 @@ class SCRIPTInterpreter(Interpreter):
                 self.visit(child)
                 self._next_bond_order = -1 
                 self._next_bond_dir = 0
+                self._next_translation = (0, 0, 0)
             elif data == 'bond':
+                self.visit(child)
+            elif data == 'maybe_periodic_bond':
+                # V3.6: bond with optional @tx,ty,tz translation vector
                 self.visit(child)
             elif data == 'local_ring':
                 self.visit(child)
@@ -245,6 +272,49 @@ class SCRIPTInterpreter(Interpreter):
 
     def bond(self, tree):
         self._next_bond_order, self._next_bond_dir, self._next_hapticity, self._next_bond_class = self._get_bond_info(tree)
+        self._next_translation = (0, 0, 0)   # reset on plain bond visit
+
+    def maybe_periodic_bond(self, tree):
+        """
+        V3.6: bond optionally followed by @tx,ty,tz translation vector.
+        Children: [bond_tree] or [bond_tree, signed_int, signed_int, signed_int]
+        """
+        from lark import Tree as LarkTree
+        children = [c for c in tree.children if c is not None]
+        # First child is always the bond subtree
+        bond_tree = children[0]
+        self._next_bond_order, self._next_bond_dir, self._next_hapticity, self._next_bond_class = self._get_bond_info(bond_tree)
+        # If there are signed_int children, extract translation
+        sint_nodes = [c for c in children[1:] if isinstance(c, LarkTree)]
+        if len(sint_nodes) == 3:
+            tx = self._parse_signed_int(sint_nodes[0])
+            ty = self._parse_signed_int(sint_nodes[1])
+            tz = self._parse_signed_int(sint_nodes[2])
+            self._next_translation = (tx, ty, tz)
+        else:
+            self._next_translation = (0, 0, 0)
+
+    def neg_int(self, tree):
+        return -int(str(tree.children[0]))
+
+    def pos_int(self, tree):
+        return int(str(tree.children[0]))
+
+    def _parse_signed_int(self, node) -> int:
+        """Parse a signed_int tree node to Python int.
+        neg_int children: [Token(SINGLE_BOND,'-'), Token(INT,'N')] — take last child.
+        pos_int children: [Token(INT,'N')] — take first (only) child.
+        """
+        from lark import Tree, Token
+        if isinstance(node, Tree):
+            if node.data == 'neg_int':
+                # Last child is always the INT token; first child is '-' (SINGLE_BOND)
+                return -int(str(node.children[-1]))
+            elif node.data == 'pos_int':
+                return int(str(node.children[0]))
+        if isinstance(node, Token):
+            return int(str(node))
+        return 0
 
     def hbond(self, tree):
         # hbond = STAR_BOND INT  -> haptic bond with explicit hapticity number
@@ -315,6 +385,7 @@ class SCRIPTInterpreter(Interpreter):
                     bond_order=self._next_bond_order,
                     bond_dir=self._next_bond_dir,
                     bond_class=self._next_bond_class,
+                    translation=self._next_translation,
                 )
                 if is_wildcard:
                     self.state.mol.atoms[-1].is_wildcard = True
@@ -324,6 +395,7 @@ class SCRIPTInterpreter(Interpreter):
             self._next_bond_dir = 0
             self._next_hapticity = 0
             self._next_bond_class = ""
+            self._next_translation = (0, 0, 0)
             
     def _handle_bracket_atom(self, node):
         element = "C"
@@ -374,11 +446,13 @@ class SCRIPTInterpreter(Interpreter):
                             bond_dir=self._next_bond_dir,
                             bond_class=self._next_bond_class,
                             is_bracket=True, mapping=mapping,
-                            radical=radical)
+                            radical=radical,
+                            translation=self._next_translation)
         atom = self.state.mol.atoms[-1]
         if is_wildcard:
             atom.is_wildcard = True
             atom.atomic_num = 0
+        self._next_translation = (0, 0, 0)
         if is_query:
             atom.is_query = True
             atom.is_wildcard = True  # query atoms are wildcards in canonical sense
@@ -494,7 +568,9 @@ class SCRIPTInterpreter(Interpreter):
                             bond_class=self._next_bond_class,
                             is_bracket=has_bracket_attr,
                             mapping=mapping,
-                            occupancy=occupancy, spin=spin, is_excited=is_excited)
+                            occupancy=occupancy, spin=spin, is_excited=is_excited,
+                            translation=self._next_translation)
+        self._next_translation = (0, 0, 0)
 
     def _parse_polymer_suffix(self, suffix_tree) -> None:
         """Extract repeat count from polymer_suffix and store on current mol."""
