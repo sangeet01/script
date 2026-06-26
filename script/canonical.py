@@ -2,6 +2,33 @@ from typing import List, Dict, Optional, Tuple
 from .mol import CoreMolecule, BondType, StereoType
 from .ranking import calculate_ranks
 from .stereo import get_chiral_symbol, perceive_chirality
+import math
+
+
+def _lattice_vectors_to_params(
+    lv: Tuple[Tuple[float,float,float], ...]
+) -> Optional[Tuple[float,float,float,float,float,float]]:
+    """
+    Convert a 3x3 row-vector lattice matrix back to
+    conventional cell parameters (a, b, c, alpha, beta, gamma).
+    Returns None if the matrix is degenerate.
+    """
+    try:
+        a_vec = lv[0]; b_vec = lv[1]; c_vec = lv[2]
+        a = math.sqrt(sum(x**2 for x in a_vec))
+        b = math.sqrt(sum(x**2 for x in b_vec))
+        c = math.sqrt(sum(x**2 for x in c_vec))
+        if a < 1e-9 or b < 1e-9 or c < 1e-9:
+            return None
+        cos_alpha = sum(b_vec[i]*c_vec[i] for i in range(3)) / (b*c)
+        cos_beta  = sum(a_vec[i]*c_vec[i] for i in range(3)) / (a*c)
+        cos_gamma = sum(a_vec[i]*b_vec[i] for i in range(3)) / (a*b)
+        alpha = round(math.degrees(math.acos(max(-1.0, min(1.0, cos_alpha)))), 4)
+        beta  = round(math.degrees(math.acos(max(-1.0, min(1.0, cos_beta)))),  4)
+        gamma = round(math.degrees(math.acos(max(-1.0, min(1.0, cos_gamma)))), 4)
+        return round(a, 4), round(b, 4), round(c, 4), alpha, beta, gamma
+    except Exception:
+        return None
 
 # Organic subset for bare symbols (no brackets)
 ORGANIC_SUBSET = {'B', 'C', 'N', 'O', 'P', 'S', 'F', 'Cl', 'Br', 'I'}
@@ -30,23 +57,40 @@ class SCRIPTCanonicalizer:
         components = self._find_components(mol)
 
         if len(components) == 1:
-            return self._canonicalize_component(mol, list(range(len(mol.atoms))))
-        
-        # Canonicalize each component independently, sort for determinism
-        fragment_strings = []
-        for component in components:
-            s = self._canonicalize_component(mol, component)
-            if s:
-                fragment_strings.append(s)
-        
-        # Strip trailing aliphatic anubandha '.' from each fragment before joining.
-        # The grammar now accepts &N without trailing '.', so this is safe.
-        # Aromatic anubandha ':' is never at end of a fragment so no need to strip it.
-        fragment_strings = [s.rstrip('.') for s in fragment_strings]
+            body = self._canonicalize_component(mol, list(range(len(mol.atoms))))
+        else:
+            fragment_strings = []
+            for component in components:
+                s = self._canonicalize_component(mol, component)
+                if s:
+                    fragment_strings.append(s)
+            fragment_strings = [s.rstrip('.') for s in fragment_strings]
+            fragment_strings.sort(key=lambda s: (-len(s), s))
+            body = '.'.join(fragment_strings)
 
-        # Sort fragments canonically (largest first, then lexicographic)
-        fragment_strings.sort(key=lambda s: (-len(s), s))
-        return '.'.join(fragment_strings)
+        # V3.6: prepend crystallographic context + lattice parameters if present
+        prefix = ''
+        ctx = getattr(mol, 'macroscopic_context', None)
+        lv  = getattr(mol, 'lattice_vectors',     None)
+        if ctx:
+            if lv is not None:
+                # Convert 3x3 lattice vectors back to a,b,c,alpha,beta,gamma
+                params = _lattice_vectors_to_params(lv)
+                if params:
+                    a, b, c, alpha, beta, gamma = params
+                    prefix = (f"[[{ctx};{a:.4f},{b:.4f},{c:.4f},"
+                              f"{alpha:.2f},{beta:.2f},{gamma:.2f}]]")
+                else:
+                    prefix = f"[[{ctx}]]"
+            else:
+                prefix = f"[[{ctx}]]"
+
+        # Phase boundary
+        pb = getattr(mol, 'phase_boundary', None)
+        if pb:
+            prefix = prefix + ' | ' if prefix else '| '
+
+        return prefix + body if prefix else body
 
     def _find_components(self, mol: CoreMolecule) -> List[List[int]]:
         """Find all connected components via BFS.
@@ -88,51 +132,44 @@ class SCRIPTCanonicalizer:
     def _canonicalize_component(self, mol: CoreMolecule, atom_indices: List[int]) -> Optional[str]:
         """Canonicalize a single connected component.
 
-        If the molecule is periodic (mol.is_periodic is True), full 3-D lattice
-        canonicalization is not yet implemented.  A sentinel prefix '~P~' is
-        prepended to the string so callers can detect this case and route to a
-        lattice-aware engine.
+        For periodic molecules (mol.is_periodic = True), the Morgan-WL ranking
+        in ranking.py includes lattice translation vectors so topologically
+        distinct sites receive distinct ranks, and _bond_symbol emits @tx,ty,tz
+        on every cross-cell bond.  The result is a canonical LQG string that
+        uniquely identifies the periodic net up to the choice of unit cell.
         """
-        periodic_prefix = ''
-        if getattr(mol, 'is_periodic', False):
-            # Flag this output as a unit-cell fingerprint, not a full periodic SCRIPT.
-            # The DFS below still runs on the quotient graph (periodic bonds are
-            # excluded from ring detection) to produce a best-effort unit-cell string.
-            periodic_prefix = '~P~'
-
-        # 1. Ranking (Universal)
+        # 1. Ranking — periodic-aware via calculate_ranks
         rank_map = calculate_ranks(mol)
         num_atoms = len(mol.atoms)
         ranks = [rank_map.get(i, 0) for i in range(num_atoms)]
-        
+
         # 2. DFS from lowest rank atom within this component
         component_set = set(atom_indices)
         start_candidates = [(ranks[i], i) for i in atom_indices if ranks[i] == min(ranks[j] for j in atom_indices)]
         start_atom = start_candidates[0][1] if start_candidates else atom_indices[0]
-        
+
         # First pass: identify ring bonds
         visited = set()
         ring_bonds_set = set()
         self._find_ring_bonds(mol, start_atom, visited, -1, ring_bonds_set)
-        
+
         # Second pass: collect DFS neighbor orders for stereochemistry
         atom_to_id_collect = {}
         dfs_neighbor_orders = {}
         self._collect_dfs_neighbor_orders(mol, start_atom, atom_to_id_collect, ranks, -1, ring_bonds_set, dfs_neighbor_orders)
-        
+
         # 3. Perceive chirality (skip if already resolved natively)
         has_chiral_data = hasattr(mol, 'chiral_centers') and mol.chiral_centers
         if not has_chiral_data:
             perceive_chirality(mol, ranks, dfs_neighbor_orders)
-        
+
         # 4. Build canonical string
         atom_to_id = {}
         depths = {start_atom: 1}
         ring_counter = [0]
-        
-        result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
 
-        return periodic_prefix + result if result else result
+        result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
+        return result
     
     def _find_ring_bonds(self, mol: CoreMolecule, atom_idx, visited, from_bond_idx, ring_bonds):
         """First pass: identify which bonds are ring closures.
@@ -368,26 +405,44 @@ class SCRIPTCanonicalizer:
     def _bond_symbol(self, bond, to_atom_idx, mol):
         bt = bond.bond_type
         # Typed bonds
-        if bt == BondType.DOUBLE:     return '='
-        if bt == BondType.TRIPLE:     return '#'
-        if bt == BondType.AROMATIC:   return ':'
-        if bt == BondType.DATIVE:     return '->'
-        if bt == BondType.REV_DATIVE: return '<-'
-        if bt == BondType.TAUTOMERIC: return '=:'
-        if bt == BondType.COORDINATE: return '>'
-        if bt == BondType.STAR:       return '*'
+        if bt == BondType.DOUBLE:     base = '='
+        elif bt == BondType.TRIPLE:   base = '#'
+        elif bt == BondType.AROMATIC: base = ':'
+        elif bt == BondType.DATIVE:   base = '->'
+        elif bt == BondType.REV_DATIVE: base = '<-'
+        elif bt == BondType.TAUTOMERIC: base = '=:'
+        elif bt == BondType.COORDINATE: base = '>'
+        elif bt == BondType.STAR:     base = '*'
         # Legacy int fallback
-        if bt == 2: return '='
-        if bt == 3: return '#'
-        if bt == 4: return ':'
-
-        if bond.bond_dir != 0:
+        elif bt == 2: base = '='
+        elif bt == 3: base = '#'
+        elif bt == 4: base = ':'
+        elif bond.bond_dir != 0:
             is_reverse = (bond.end_atom_idx == to_atom_idx)
             if bond.bond_dir in (1, 3):
-                return '\\' if is_reverse else '/'
+                base = '\\' if is_reverse else '/'
             elif bond.bond_dir in (2, 4):
-                return '/' if is_reverse else '\\'
-        return ""
+                base = '/' if is_reverse else '\\'
+            else:
+                base = ''
+        else:
+            base = ''
+
+        # V3.6: append translation vector for periodic/cross-cell bonds
+        t = getattr(bond, 'translation', (0, 0, 0))
+        if t != (0, 0, 0):
+            # Normalise direction: store as seen from begin_atom_idx → end_atom_idx
+            if bond.end_atom_idx == to_atom_idx:
+                tx, ty, tz = t
+            else:
+                tx, ty, tz = -t[0], -t[1], -t[2]
+            # Single bonds must be explicit when carrying a translation vector
+            # so the output is reparseable (bare '@' after atom is ambiguous)
+            if base == '':
+                base = '-'
+            base = f"{base}@{tx},{ty},{tz}"
+
+        return base
 
     def _has_default_valence(self, atom, mol, atom_idx):
         if atom.symbol not in DEFAULT_VALENCE: return False
