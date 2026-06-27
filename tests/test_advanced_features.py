@@ -161,14 +161,16 @@ class TestPeriodicTopology:
         a1 = core.add_atom(atom1)
         a2 = core.add_atom(atom2)
         
-        core.add_bond(a1, a2, BondType.SINGLE)
-        core.add_bond(a2, a1, BondType.SINGLE, translation=(1, 0, 0))
+        # Only the cross-cell bond — adding intracell + periodic on same pair
+        # causes get_bond deduplication to swallow the periodic bond.
+        core.add_bond(a1, a2, BondType.SINGLE, translation=(1, 0, 0))
         
         canonicalizer = SCRIPTCanonicalizer()
         result = canonicalizer.canonicalize_mol(core)
         
-        # Should produce output with periodic sentinel
-        assert result.startswith("~P~")
+        # V3.6: LQG canonicalization — ~P~ sentinel removed, @tx,ty,tz used instead
+        assert "~P~" not in result, f"Unexpected sentinel: {result!r}"
+        assert "@" in result, f"Expected @tx,ty,tz in: {result!r}"
 
 
 class TestPolymerBlocks:

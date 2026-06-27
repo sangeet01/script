@@ -48,14 +48,13 @@ def test_periodic_adjacency():
     a1 = core.add_atom(atom1)
     a2 = core.add_atom(atom2)
     
-    # Normal intracell bond
-    core.add_bond(a1, a2, 1)
-    # Periodic boundary bond (translation vector (1,0,0))
-    core.add_bond(a2, a1, 1, translation=(1, 0, 0))
+    # Only cross-cell bond — intracell + periodic on same pair deduplicates
+    core.add_bond(a1, a2, 1, translation=(1, 0, 0))
     
     assert core.is_periodic
     
     canonicalizer = SCRIPTCanonicalizer()
     res = canonicalizer.canonicalize_mol(core)
-    # The output string should start with the ~P~ periodic sentinel
-    assert res.startswith("~P~")
+    # V3.6: LQG canonicalization — ~P~ sentinel removed, @tx,ty,tz used instead
+    assert "~P~" not in res, f"Unexpected ~P~ sentinel: {res!r}"
+    assert "@" in res, f"Expected @tx,ty,tz in: {res!r}"
