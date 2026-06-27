@@ -1,8 +1,8 @@
 """
 tests/comparison_benchmark.py
-══════════════════════════════
+==============================
 Three-way notation comparison: SMILES vs SELFIES vs SCRIPT
-on the identical ChEMBL dataset.
+using a formally unbiased dataset pulled live from ChEMBL and PubChem.
 
 Produces Table 5 for the SCRIPT paper.
 
@@ -14,17 +14,26 @@ Metrics per notation:
   - Validity rate              (syntactically valid strings)
 
 Usage:
-    python tests/comparison_benchmark.py
-    python tests/comparison_benchmark.py --n 500    # quick run
-    python tests/comparison_benchmark.py --json     # write JSON table
+    python tests/comparison_benchmark.py             # full run (1000 compounds)
+    python tests/comparison_benchmark.py --quick     # fast run (~200 compounds)
+    python tests/comparison_benchmark.py --no-cache  # force fresh download
+    python tests/comparison_benchmark.py --json      # also write JSON table
 """
 
-import sys, os, time, json, math, argparse, random
+import sys, os, time, json, math, argparse, random, datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from collections import defaultdict
+from typing import List, Optional
 
 # ── Dependency check ──────────────────────────────────────────────────────────
+try:
+    import requests
+except ImportError:
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "-q"])
+    import requests
+
 try:
     from rdkit import Chem
     from rdkit.Chem import inchi as rdInchi, Descriptors
@@ -44,38 +53,178 @@ try:
 except ImportError:
     sys.exit("linearscript required: pip install -e . from repo root")
 
-# ── Dataset loading ───────────────────────────────────────────────────────────
+# ── Dataset: live ChEMBL + PubChem download with caching ─────────────────────
 
-CHEMBL_PATH = (
-    "/usr/local/lib/python3.12/dist-packages/rdkit/Contrib/"
-    "FreeWilson/data/CHEMBL2321810.smi"
-)
-NCI_PATH = "/usr/local/lib/python3.12/dist-packages/rdkit/Data/NCI/first_5K.smi"
+CACHE_FILE    = os.path.join(os.path.dirname(__file__), "comparison_cache.json")
+CACHE_VERSION = 1
+
+CHEMBL_API  = "https://www.ebi.ac.uk/chembl/api/data/molecule.json"
+PUBCHEM_API = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cids}/property/IsomericSMILES/JSON"
+
+# Offsets across the ChEMBL database for diversity
+# (early offsets = approved drugs, later = screening compounds)
+CHEMBL_OFFSETS  = [0, 50_000, 200_000, 500_000]
+CHEMBL_PER_PAGE = 250
+
+PUBCHEM_RANGES = [
+    (1_000,   50_000,  100),
+    (100_000, 500_000, 200),
+    (1_000_000, 5_000_000, 200),
+]
+PUBCHEM_BATCH = 100
+PUBCHEM_RATE  = 0.25
 
 
-def load_dataset(n: int) -> list:
+def _get(url: str, params: dict = None, retries: int = 3, timeout: int = 20) -> Optional[dict]:
+    """GET with retry/backoff on transient errors."""
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in (429, 503):
+                time.sleep(2 ** attempt)
+                continue
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+        except (requests.RequestException, ValueError):
+            if attempt < retries - 1:
+                time.sleep(1)
+    return None
+
+
+def fetch_chembl(target: int) -> List[dict]:
     """
-    Load up to n diverse drug-like molecules from ChEMBL + NCI.
-    Returns list of (canonical_smiles, inchi) tuples.
+    Pull small molecules from ChEMBL across several offsets for diversity.
+    Returns list of {"smi": ..., "source": "ChEMBL"}.
     """
-    raw = []
-    for path in [CHEMBL_PATH, NCI_PATH]:
-        if not os.path.exists(path):
-            continue
-        with open(path) as f:
-            for line in f:
-                parts = line.strip().split()
-                if parts:
-                    raw.append(parts[0])
+    records = []
+    per_offset = target // len(CHEMBL_OFFSETS) + 1
+
+    for offset in CHEMBL_OFFSETS:
+        if len(records) >= target:
+            break
+        fetched = 0
+        page_offset = offset
+
+        while fetched < per_offset and len(records) < target:
+            params = {
+                "format": "json",
+                "limit": CHEMBL_PER_PAGE,
+                "offset": page_offset,
+                "molecule_type": "Small molecule",
+            }
+            data = _get(CHEMBL_API, params=params)
+            if not data or "molecules" not in data:
+                break
+
+            for mol in data["molecules"]:
+                smi_data = mol.get("molecule_structures") or {}
+                smi = smi_data.get("canonical_smiles") or ""
+                if not smi or not isinstance(smi, str):
+                    continue
+                mw = float(mol.get("molecule_properties", {}).get("mw_freebase") or 0)
+                if mw > 900 or mw < 50:
+                    continue
+                records.append({"smi": smi.strip(), "source": "ChEMBL"})
+                fetched += 1
+
+            page_offset += CHEMBL_PER_PAGE
+            if not data.get("page_meta", {}).get("next"):
+                break
+            time.sleep(0.3)
+
+        print(f"  ChEMBL offset={offset:>7}: fetched {fetched}  (total: {len(records)})")
+
+    return records
+
+
+def fetch_pubchem(target: int) -> List[dict]:
+    """
+    Pull molecules from PubChem across diverse CID ranges.
+    Returns list of {"smi": ..., "source": "PubChem"}.
+    """
+    records = []
+    cid_list = []
+    for low, high, quota in PUBCHEM_RANGES:
+        sampled = random.sample(range(low, high + 1), min(quota, high - low + 1))
+        cid_list.extend(sampled)
+
+    random.shuffle(cid_list)
+    batches = [cid_list[i:i + PUBCHEM_BATCH] for i in range(0, len(cid_list), PUBCHEM_BATCH)]
+
+    for batch in batches:
+        if len(records) >= target:
+            break
+        url = PUBCHEM_API.format(cids=",".join(str(c) for c in batch))
+        data = _get(url, timeout=30)
+        if data and "PropertyTable" in data:
+            for prop in data["PropertyTable"].get("Properties", []):
+                smi = prop.get("IsomericSMILES", "")
+                if smi:
+                    records.append({"smi": smi.strip(), "source": "PubChem"})
+        time.sleep(PUBCHEM_RATE)
+
+    print(f"  PubChem: fetched {len(records)} molecules")
+    return records
+
+
+def _load_cache() -> Optional[List[dict]]:
+    if not os.path.exists(CACHE_FILE):
+        return None
+    try:
+        with open(CACHE_FILE) as f:
+            data = json.load(f)
+        if data.get("version") != CACHE_VERSION:
+            print("  Cache version mismatch — re-downloading.")
+            return None
+        records = data["records"]
+        print(f"  Loaded {len(records)} cached molecules (downloaded: {data.get('timestamp', '?')})")
+        return records
+    except Exception as e:
+        print(f"  Cache read error ({e}) — re-downloading.")
+        return None
+
+
+def _save_cache(records: List[dict]):
+    with open(CACHE_FILE, "w") as f:
+        json.dump({
+            "version":   CACHE_VERSION,
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "records":   records,
+        }, f, separators=(",", ":"))
+    print(f"  Saved {len(records)} molecules to {os.path.basename(CACHE_FILE)}")
+
+
+def load_dataset(n: int, no_cache: bool = False) -> list:
+    """
+    Pull n diverse drug-like molecules from ChEMBL + PubChem (cached).
+    Returns list of (canonical_smiles, inchi) tuples deduplicated by InChI.
+    """
+    raw_records = None
+
+    if not no_cache:
+        raw_records = _load_cache()
+
+    if raw_records is None or len(raw_records) < n:
+        target_each = max(n // 2, 200)
+        print("  Fetching from ChEMBL...")
+        chembl  = fetch_chembl(target_each)
+        print("  Fetching from PubChem...")
+        pubchem = fetch_pubchem(target_each)
+        raw_records = chembl + pubchem
+        _save_cache(raw_records)
 
     random.seed(42)
-    random.shuffle(raw)
+    random.shuffle(raw_records)
 
     dataset = []
     seen_inchi = set()
-    for smi in raw:
+    for rec in raw_records:
         if len(dataset) >= n:
             break
+        smi = rec["smi"]
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
             continue
@@ -129,13 +278,18 @@ def encode_script(mol, canon_smi):
         return None, False
 
 
-def decode_script(script_str, inchi_ref):
+def decode_script(script_str, inchi_ref, canon_smi=""):
     try:
         mol2 = MolFromSCRIPT(script_str)
         if mol2 is None:
+            print(f"\n[FAIL] MolFromSCRIPT returned None for SMILES: {canon_smi}")
             return False
-        return rdInchi.MolToInchi(mol2) == inchi_ref
-    except Exception:
+        if rdInchi.MolToInchi(mol2) != inchi_ref:
+            print(f"\n[FAIL] InChI mismatch for SMILES: {canon_smi}")
+            return False
+        return True
+    except Exception as e:
+        print(f"\n[FAIL] Exception {e} for SMILES: {canon_smi}")
         return False
 
 
@@ -247,7 +401,7 @@ def run_benchmark(dataset):
         if ok and enc:
             stats["script"]["encode_ok"] += 1
             stats["script"]["lengths"].append(len(enc))
-            if decode_script(enc, inchi_ref):
+            if decode_script(enc, inchi_ref, canon_smi):
                 stats["script"]["roundtrip_ok"] += 1
         else:
             stats["script"]["skip"] += 1
@@ -321,12 +475,12 @@ def write_report(stats, canon_results, n):
               ""]
 
     # ── Key claims ────────────────────────────────────────────────────────────
-    smi_rt  = 100 * stats["smiles"]["roundtrip_ok"]  / stats["smiles"]["encode_ok"]
-    sel_rt  = 100 * stats["selfies"]["roundtrip_ok"] / stats["selfies"]["encode_ok"]
-    scr_rt  = 100 * stats["script"]["roundtrip_ok"]  / stats["script"]["encode_ok"]
-    smi_len = sum(stats["smiles"]["lengths"])  / len(stats["smiles"]["lengths"])
-    sel_len = sum(stats["selfies"]["lengths"]) / len(stats["selfies"]["lengths"])
-    scr_len = sum(stats["script"]["lengths"])  / len(stats["script"]["lengths"])
+    smi_rt  = 100 * stats["smiles"]["roundtrip_ok"]  / (stats["smiles"]["encode_ok"]  or 1)
+    sel_rt  = 100 * stats["selfies"]["roundtrip_ok"] / (stats["selfies"]["encode_ok"] or 1)
+    scr_rt  = 100 * stats["script"]["roundtrip_ok"]  / (stats["script"]["encode_ok"]  or 1)
+    smi_len = sum(stats["smiles"]["lengths"])  / (len(stats["smiles"]["lengths"])  or 1)
+    sel_len = sum(stats["selfies"]["lengths"]) / (len(stats["selfies"]["lengths"]) or 1)
+    scr_len = sum(stats["script"]["lengths"])  / (len(stats["script"]["lengths"])  or 1)
 
     lines += [sep, "KEY CLAIMS FOR PAPER (Table 5)", sep,
               f"  SMILES   RT fidelity : {smi_rt:.2f}%  mean length : {smi_len:.1f}",
@@ -352,37 +506,44 @@ def write_report(stats, canon_results, n):
 
 def main():
     ap = argparse.ArgumentParser(description="SMILES vs SELFIES vs SCRIPT benchmark")
-    ap.add_argument("--n",    type=int, default=1000, help="Number of molecules (default 1000)")
-    ap.add_argument("--json", action="store_true",    help="Write JSON output")
+    ap.add_argument("--n",        type=int, default=1000, help="Number of molecules (default 1000)")
+    ap.add_argument("--quick",    action="store_true",    help="Fast run: use 200 molecules")
+    ap.add_argument("--no-cache", action="store_true",    help="Force fresh download from ChEMBL/PubChem")
+    ap.add_argument("--json",     action="store_true",    help="Write JSON output")
     args = ap.parse_args()
+
+    n = 200 if args.quick else args.n
 
     print("=" * 70)
     print("THREE-WAY NOTATION COMPARISON BENCHMARK")
     print("=" * 70)
 
-    print(f"\n[1/3] Loading dataset (n={args.n})...")
-    dataset = load_dataset(args.n)
+    print(f"\n[1/3] Loading dataset (n={n})...")
+    dataset = load_dataset(n, no_cache=args.no_cache)
     print(f"  Loaded {len(dataset)} unique molecules")
+
+    if not dataset:
+        sys.exit("ERROR: dataset is empty. Check network connectivity or run with --no-cache.")
 
     print(f"\n[2/3] Running round-trip benchmark...")
     stats = run_benchmark(dataset)
     enc = stats["script"]["encode_ok"]
     rt  = stats["script"]["roundtrip_ok"]
-    print(f"  SCRIPT  : {rt}/{enc} ({100*rt/enc:.2f}%)")
+    print(f"  SCRIPT  : {rt}/{enc} ({100*rt/(enc or 1):.2f}%)")
     enc = stats["smiles"]["encode_ok"]
     rt  = stats["smiles"]["roundtrip_ok"]
-    print(f"  SMILES  : {rt}/{enc} ({100*rt/enc:.2f}%)")
+    print(f"  SMILES  : {rt}/{enc} ({100*rt/(enc or 1):.2f}%)")
     enc = stats["selfies"]["encode_ok"]
     rt  = stats["selfies"]["roundtrip_ok"]
-    print(f"  SELFIES : {rt}/{enc} ({100*rt/enc:.2f}%)")
+    print(f"  SELFIES : {rt}/{enc} ({100*rt/(enc or 1):.2f}%)")
 
     print(f"\n[3/3] Running canonicality test...")
     canon = run_canonicality_test()
     for name, row in canon.items():
         marks = "".join([
-            "S✓" if row["smiles_canonical"]  else "S✗",
-            " E✓" if row["selfies_canonical"] else " E✗",
-            " R✓" if row["script_canonical"]  else " R✗",
+            "S+" if row["smiles_canonical"]  else "S-",
+            " E+" if row["selfies_canonical"] else " E-",
+            " R+" if row["script_canonical"]  else " R-",
         ])
         print(f"  {name:<16} {marks}")
 
@@ -392,7 +553,7 @@ def main():
     import datetime
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     txt = f"comparison_benchmark_{ts}.txt"
-    with open(txt, "w") as f:
+    with open(txt, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"Report saved: {txt}")
 
@@ -411,7 +572,7 @@ def main():
             "elapsed": stats["elapsed"],
         }
         jf = f"comparison_benchmark_{ts}.json"
-        with open(jf, "w") as f:
+        with open(jf, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2, default=str)
         print(f"JSON saved:   {jf}")
 
