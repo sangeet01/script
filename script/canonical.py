@@ -273,8 +273,11 @@ class SCRIPTCanonicalizer:
             if bond_idx in ring_bonds_set:
                 if nbr_idx in atom_to_id:
                     if atom_to_id[nbr_idx] < atom_string_id:
-                        # Topological distance is the difference in depths
-                        topo_size = curr_depth - depths.get(nbr_idx, 1) + 1
+                        # FIXED: Calculate lookback based on flat linear string position, not depth
+                        # This is the critical fix for bridged rings
+                        target_position = atom_to_id[nbr_idx]
+                        current_position = atom_string_id
+                        topo_size = current_position - target_position + 1
                         is_arom = mol.bonds[bond_idx].bond_type == BondType.AROMATIC
                         anubandha = ":" if is_arom else "-"
                         bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol)

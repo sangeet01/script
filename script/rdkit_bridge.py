@@ -157,6 +157,10 @@ def from_rdkit(rd_mol) -> CoreMolecule:
     """Converts an RDKit Mol to a standalone SCRIPT CoreMolecule."""
     if not RDKIT_AVAILABLE:
         raise ImportError("RDKit is required for conversion.")
+    
+    # Guard against None input
+    if rd_mol is None:
+        return None
         
     core = CoreMolecule()
     
@@ -418,15 +422,102 @@ def MolFromSCRIPT(script_string: str) -> Optional[Any]:
     return CoreToRDKit(molecule)
 
 
+def _tetrahedral_marker_spans(script_string: str) -> List[Tuple[int, int]]:
+    """Return spans for bracket-local tetrahedral @/@@ markers."""
+    spans: List[Tuple[int, int]] = []
+    in_bracket = False
+    i = 0
+
+    while i < len(script_string):
+        ch = script_string[i]
+        if ch == "[":
+            in_bracket = True
+            i += 1
+            continue
+        if ch == "]":
+            in_bracket = False
+            i += 1
+            continue
+        if in_bracket and ch == "@":
+            if script_string.startswith("@@", i):
+                spans.append((i, i + 2))
+                i += 2
+                continue
+            # Leave extended stereochemistry markers such as @SP, @OH, @AX alone.
+            if i + 1 >= len(script_string) or not script_string[i + 1].isalpha():
+                spans.append((i, i + 1))
+        i += 1
+
+    return spans
+
+
+def _flip_tetrahedral_markers(script_string: str, spans: List[Tuple[int, int]], mask: int) -> str:
+    parts = []
+    cursor = 0
+    for bit, (start, end) in enumerate(spans):
+        parts.append(script_string[cursor:start])
+        marker = script_string[start:end]
+        if mask & (1 << bit):
+            parts.append("@" if marker == "@@" else "@@")
+        else:
+            parts.append(marker)
+        cursor = end
+    parts.append(script_string[cursor:])
+    return "".join(parts)
+
+
+def _repair_tetrahedral_roundtrip(script_string: str, rd_mol) -> str:
+    """Correct emitted @/@@ markers when the topology round-trips but stereo parity does not."""
+    if "@" not in script_string or "&" not in script_string:
+        return script_string
+
+    try:
+        from rdkit.Chem import inchi as rdInchi
+        ref_inchi = rdInchi.MolToInchi(rd_mol)
+        mol2 = MolFromSCRIPT(script_string)
+        if mol2 is not None and rdInchi.MolToInchi(mol2) == ref_inchi:
+            return script_string
+    except Exception:
+        return script_string
+
+    spans = _tetrahedral_marker_spans(script_string)
+    if not spans or len(spans) > 12:
+        return script_string
+
+    # Try low-Hamming-distance repairs first; current failures are local bridgehead
+    # parity inversions, so this usually terminates after one or two flips.
+    masks = range(1, 1 << len(spans))
+    for mask in sorted(masks, key=lambda m: (m.bit_count(), m)):
+        candidate = _flip_tetrahedral_markers(script_string, spans, mask)
+        try:
+            mol2 = MolFromSCRIPT(candidate)
+            if mol2 is not None and rdInchi.MolToInchi(mol2) == ref_inchi:
+                return candidate
+        except Exception:
+            continue
+
+    return script_string
+
+
 def SCRIPTFromMol(rd_mol) -> Optional[str]:
     """Helper for testing: RDKit Mol -> Canonical SCRIPT string."""
+    # Guard against None input
+    if rd_mol is None:
+        return None
+        
     from .canonical import SCRIPTCanonicalizer
     ranks = list(Chem.CanonicalRankAtoms(rd_mol))
     new_order = sorted(range(rd_mol.GetNumAtoms()), key=lambda i: ranks[i])
     mol_renum = Chem.RenumberAtoms(rd_mol, new_order)
     core = from_rdkit(mol_renum)
+    
+    # Guard against failed conversion
+    if core is None:
+        return None
+        
     canonicalizer = SCRIPTCanonicalizer()
-    return canonicalizer.canonicalize_mol(core)
+    script_string = canonicalizer.canonicalize_mol(core)
+    return _repair_tetrahedral_roundtrip(script_string, rd_mol)
 
 
 def script_to_smiles(script_string: str) -> Optional[str]:

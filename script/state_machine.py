@@ -244,14 +244,21 @@ class GenerativeStateMachine:
             self.current_atom_idx = self.stack.pop()
 
     def add_ring(self, identifier: Any, bond_order: int = -1):
-        """Close a ring using back-counting (int) or named register (str)."""
+        """Close a ring using back-counting (int) or named register (str).
+        
+        For integer identifiers: identifier is "how many atoms back" in the linear string.
+        - identifier=1: current atom itself (invalid/ignored)
+        - identifier=2: previous atom
+        - identifier=N: the atom at position (current_idx - N + 1)
+        
+        This matches the flat position-based encoding in canonical.py.
+        """
         if self.current_atom_idx is None: return
         
         target_idx = -1
         if isinstance(identifier, int):
-            # identifier is "how many atoms back"
-            # 1 means this atom itself (invalid), 2 means the previous atom.
-            # Index-wise: target = current - (identifier - 1)
+            # identifier is "how many atoms back" from the current position
+            # Calculate target using flat linear position arithmetic
             target_idx = self.current_atom_idx - (identifier - 1)
         elif isinstance(identifier, str):
             if identifier in self.registers:
@@ -271,19 +278,18 @@ class GenerativeStateMachine:
         """Close a V2 ring setting aromatic/resonant flags automatically over the topological cycle."""
         if self.current_atom_idx is None: return
         if ring_size < 3: return # Invalid ring size
-        
-        # Topological walk back to find the target atom
-        curr_trace = self.current_atom_idx
-        for _ in range(ring_size - 1):
-            if curr_trace in self.parents:
-                curr_trace = self.parents[curr_trace]
-            else:
-                # Path terminated early? Fallback to index-based if something failed, but should not happen in valid DFS
-                return
-        
-        target_idx = curr_trace
+
+        # V2 &N uses the same flat lookback semantics as canonical.py:
+        # &N means "connect the current atom to the atom N positions back in
+        # the generated SCRIPT atom stream". Branch close/open must not shrink
+        # this history, otherwise bridged rings decode to the wrong atom.
+        target_idx = self.current_atom_idx - (ring_size - 1)
         
         if 0 <= target_idx < len(self.mol.atoms):
+            aromatic_path = None
+            if is_resonant:
+                aromatic_path = self._find_existing_path(target_idx, self.current_atom_idx)
+
             # The bond itself
             bo = 4 if (is_resonant or bond_order == 4) else (1 if bond_order == -1 else bond_order)
             self.add_bond(self.current_atom_idx, target_idx, bo)
@@ -295,22 +301,39 @@ class GenerativeStateMachine:
                 
             # If resonant, walk back on the DFS path and mark atoms and intermediate bonds as aromatic
             if is_resonant:
-                # Mark current and target
-                self.mol.atoms[self.current_atom_idx].is_aromatic = True
-                self.mol.atoms[target_idx].is_aromatic = True
-                
-                # Trace back from current to target via parents
-                curr = self.current_atom_idx
-                while curr != target_idx and curr in self.parents:
-                    p = self.parents[curr]
-                    self.mol.atoms[p].is_aromatic = True
-                    b = self.mol.get_bond(curr, p)
+                # Mark the actual graph path that existed before the closure.
+                # The emitted atom interval may contain branches that are not in
+                # this aromatic ring.
+                path = aromatic_path or [target_idx, self.current_atom_idx]
+                for idx in path:
+                    self.mol.atoms[idx].is_aromatic = True
+
+                for u, v in zip(path, path[1:]):
+                    b = self.mol.get_bond(u, v)
                     if b:
                         b.bond_type = 4
                         b.is_aromatic = True
-                    curr = p
-                    if curr == target_idx: break
-                    # Safety break
+
+    def _find_existing_path(self, start_idx: int, end_idx: int) -> Optional[List[int]]:
+        """Find a path in the current graph before a ring closure bond is added."""
+        if start_idx == end_idx:
+            return [start_idx]
+
+        queue: List[Tuple[int, List[int]]] = [(start_idx, [start_idx])]
+        seen = {start_idx}
+
+        while queue:
+            atom_idx, path = queue.pop(0)
+            for nbr_idx, _ in self.mol.adj.get(atom_idx, []):
+                if nbr_idx in seen:
+                    continue
+                next_path = path + [nbr_idx]
+                if nbr_idx == end_idx:
+                    return next_path
+                seen.add(nbr_idx)
+                queue.append((nbr_idx, next_path))
+
+        return None
 
     def finalize_valences(self):
         """
