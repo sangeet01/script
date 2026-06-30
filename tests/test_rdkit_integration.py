@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(not RDKIT_AVAILABLE, reason="RDKit not available
 
 if RDKIT_AVAILABLE:
     from rdkit import Chem
+    from rdkit.Chem import inchi as rdInchi
 
 class TestRDKitIntegration:
     """Test SCRIPT-RDKit integration"""
@@ -105,6 +106,21 @@ class TestRDKitIntegration:
             # SCRIPT -> SMILES
             smiles_back = script_to_smiles(script)
             assert smiles_back is not None, f"Failed to convert back {script}"
+
+    def test_organomercury_roundtrip(self):
+        """Bracket metal atoms must preserve their real atomic numbers."""
+        smiles = "[Cl][Hg][c]1ccc(Cl)s1"
+        mol = Chem.MolFromSmiles(smiles)
+        assert mol is not None
+
+        script = SCRIPTFromMol(mol)
+        assert script is not None
+
+        mol_back = MolFromSCRIPT(script)
+        assert mol_back is not None
+        assert any(atom.GetSymbol() == "Hg" and atom.GetAtomicNum() == 80
+                   for atom in mol_back.GetAtoms())
+        assert rdInchi.MolToInchi(mol_back) == rdInchi.MolToInchi(mol)
     
     def test_ring_handling(self):
         """Test ring structure handling"""
