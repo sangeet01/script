@@ -509,6 +509,11 @@ def SCRIPTFromMol(rd_mol) -> Optional[str]:
     ranks = list(Chem.CanonicalRankAtoms(rd_mol))
     new_order = sorted(range(rd_mol.GetNumAtoms()), key=lambda i: ranks[i])
     mol_renum = Chem.RenumberAtoms(rd_mol, new_order)
+    
+    # Regenerate directional bonds (/, \) for the new atom order
+    Chem.AssignStereochemistry(mol_renum, cleanIt=True, force=True)
+    Chem.SetDoubleBondNeighborDirections(mol_renum)
+    
     core = from_rdkit(mol_renum)
     
     # Guard against failed conversion
