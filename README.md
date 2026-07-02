@@ -1,6 +1,6 @@
 #
 
-### SCRIPT: Structural Chemical Representation In Plain Text
+# SCRIPT: Structural Chemical Representation In Plain Text
 
 <p align="center">
   <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" width="100%">
