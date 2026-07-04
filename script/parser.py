@@ -355,6 +355,9 @@ class SCRIPTInterpreter(Interpreter):
 
     def atom_expr(self, tree):
         count = self._get_multiplier(tree)
+        legacy_ring_count = count if self._is_legacy_ring_closure_candidate(tree, count) else None
+        if legacy_ring_count is not None:
+            count = 1
         
         # Find the actual atom child
         atom_node = None
@@ -396,6 +399,9 @@ class SCRIPTInterpreter(Interpreter):
             self._next_hapticity = 0
             self._next_bond_class = ""
             self._next_translation = (0, 0, 0)
+
+        if legacy_ring_count is not None:
+            self.state.add_ring(legacy_ring_count, bond_order=1)
             
     def _handle_bracket_atom(self, node):
         element = "C"
@@ -718,6 +724,21 @@ class SCRIPTInterpreter(Interpreter):
             except: return -1
         return 0
 
+    def _attach_parents(self, tree, parent=None):
+        if isinstance(tree, Tree):
+            tree.parent = parent
+            for child in tree.children:
+                self._attach_parents(child, tree)
+
+    def _is_legacy_ring_closure_candidate(self, tree, count: int) -> bool:
+        if count < 3:
+            return False
+        parent = getattr(tree, 'parent', None)
+        if parent is None or parent.data.lstrip('!') != 'molecular_chain':
+            return False
+        child_trees = [c for c in parent.children if isinstance(c, Tree)]
+        return child_trees and child_trees[-1] is tree
+
     def local_ring(self, tree):
         # Check for V2 ring closures: &INT: or &INT.
         ring_closure_nodes = list(tree.find_data('ring_closure'))
@@ -812,6 +833,7 @@ class SCRIPTParser:
         try:
             from .mol import Reaction, CoreMolecule
             tree = self.parser.parse(script_string)
+            self.interpreter._attach_parents(tree)
             self.interpreter.state = GenerativeStateMachine()
             self.interpreter._next_bond_order = -1
             self.interpreter._next_bond_dir = 0

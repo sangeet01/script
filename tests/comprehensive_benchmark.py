@@ -159,7 +159,7 @@ def run_basic_organic():
         ("Methane", "C", 1, 0), ("Ethane", "CC", 2, 1), ("Propane", "CCC", 3, 2),
         ("Butane", "CCCC", 4, 3), ("Isobutane", "CC(C)C", 4, 3),
         ("Neopentane", "CC(C)(C)C", 5, 4), ("Ethanol", "CCO", 3, 2),
-        ("Isopropanol", "CC(O)C", 3, 2), ("tert-Butanol", "CC(C)(C)O", 4, 3),
+        ("Isopropanol", "CC(O)C", 4, 3), ("tert-Butanol", "CC(C)(C)O", 5, 4),
         ("Ethylene glycol", "C(O)CO", 4, 3),
     ]
     for name, script, expected_atoms, expected_bonds in simple:

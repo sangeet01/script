@@ -143,35 +143,40 @@ class SCRIPTCanonicalizer:
         num_atoms = len(mol.atoms)
         ranks = [rank_map.get(i, 0) for i in range(num_atoms)]
 
-        # 2. DFS from lowest rank atom within this component
+        # 2. DFS from lowest rank atom(s) within this component
         component_set = set(atom_indices)
-        start_candidates = [(ranks[i], i) for i in atom_indices if ranks[i] == min(ranks[j] for j in atom_indices)]
-        start_atom = start_candidates[0][1] if start_candidates else atom_indices[0]
+        min_rank = min(ranks[i] for i in atom_indices)
+        start_candidates = [i for i in atom_indices if ranks[i] == min_rank]
 
-        # First pass: identify ring bonds
+        if len(start_candidates) == 1:
+            return self._canonicalize_component_from_root(mol, atom_indices, start_candidates[0], ranks)
+
+        canonical_forms = []
+        for start_atom in start_candidates:
+            canon = self._canonicalize_component_from_root(mol, atom_indices, start_atom, ranks)
+            if canon is not None:
+                canonical_forms.append(canon)
+        return min(canonical_forms) if canonical_forms else None
+
+    def _canonicalize_component_from_root(self, mol: CoreMolecule, atom_indices: List[int], start_atom: int, ranks: List[int]) -> Optional[str]:
         visited = set()
         ring_bonds_set = set()
-        self._find_ring_bonds(mol, start_atom, visited, -1, ring_bonds_set)
+        self._find_ring_bonds(mol, start_atom, visited, ranks, -1, ring_bonds_set)
 
-        # Second pass: collect DFS neighbor orders for stereochemistry
         atom_to_id_collect = {}
         dfs_neighbor_orders = {}
         self._collect_dfs_neighbor_orders(mol, start_atom, atom_to_id_collect, ranks, -1, ring_bonds_set, dfs_neighbor_orders)
 
-        # 3. Perceive chirality (skip if already resolved natively)
         has_chiral_data = hasattr(mol, 'chiral_centers') and mol.chiral_centers
         if not has_chiral_data:
             perceive_chirality(mol, ranks, dfs_neighbor_orders)
 
-        # 4. Build canonical string
         atom_to_id = {}
         depths = {start_atom: 1}
         ring_counter = [0]
-
-        result = self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
-        return result
+        return self._dfs(mol, start_atom, atom_to_id, ranks, -1, ring_counter, ring_bonds_set, depths)
     
-    def _find_ring_bonds(self, mol: CoreMolecule, atom_idx, visited, from_bond_idx, ring_bonds):
+    def _find_ring_bonds(self, mol: CoreMolecule, atom_idx, visited, ranks, from_bond_idx, ring_bonds):
         """First pass: identify which bonds are ring closures.
 
         Periodic bonds (translation != (0,0,0)) are lattice edges, not ring
@@ -188,7 +193,7 @@ class SCRIPTCanonicalizer:
             bond = mol.bonds[bond_idx]
             if getattr(bond, 'translation', (0,0,0)) != (0,0,0):
                 continue  # skip periodic boundary bonds in ring detection
-            neighbors.append((mol.atoms[nbr_idx].rank, nbr_idx, bond_idx))
+            neighbors.append((ranks[nbr_idx], nbr_idx, bond_idx))
 
         neighbors.sort(key=lambda x: (x[0], x[1]))
 
@@ -196,7 +201,7 @@ class SCRIPTCanonicalizer:
             if nbr_idx in visited:
                 ring_bonds.add(bond_idx)
             else:
-                self._find_ring_bonds(mol, nbr_idx, visited, bond_idx, ring_bonds)
+                self._find_ring_bonds(mol, nbr_idx, visited, ranks, bond_idx, ring_bonds)
     
     def _collect_dfs_neighbor_orders(self, mol: CoreMolecule, atom_idx, atom_to_id, ranks, from_bond_idx, ring_bonds_set, dfs_orders):
         """Collect DFS neighbor orders for stereochemistry reference."""
