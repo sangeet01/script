@@ -34,5 +34,21 @@ def get_visualizer():
     except ImportError:
         raise ImportError("Visualizer not available. Install: pip install rdkit")
 
+# Constrained decoder for ML generation (100% validity guarantee)
+def get_constrained_decoder():
+    """Lazy import of ConstrainedSCRIPTDecoder for ML generation.
+    
+    Returns the ConstrainedSCRIPTDecoder class, which enforces grammar-state-
+    aware token masking during autoregressive generation. This gives ~100%
+    validity for ML-generated SCRIPT strings without changing the notation.
+    
+    Usage:
+        decoder = get_constrained_decoder()()
+        decoder.reset()
+        mask = decoder.get_valid_token_mask(vocab)
+    """
+    from .constrained_decoder import ConstrainedSCRIPTDecoder
+    return ConstrainedSCRIPTDecoder
+
 __version__ = "3.0.0"
 __author__ = "SCRIPT Development Team"
