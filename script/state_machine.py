@@ -417,56 +417,79 @@ class GenerativeStateMachine:
                     b.is_aromatic = True
 
     def _get_v2_ring_target(self, atom_idx: int, ring_size: int) -> Optional[int]:
-        """Find the V2 ring closure target using the flat emitted atom stream.
+        """Find the V2 ring closure target.
 
-        &N ring closures refer to the N-atom cycle in the generated SCRIPT
-        atom stream, including branched atoms. Using the parent chain can
-        miss atoms that were emitted in branches, so we calculate the target
-        by flat atom index arithmetic.
+        SELFIES-inspired hybrid approach:
+
+        1. Try flat lookback (canonicalizer uses this): target = atom_idx - (N-1)
+           Accept if the target has an open valence (is a ring atom, not a
+           fully-saturated branch atom).
+
+        2. If flat target is a branch atom (no open valence), fall back to
+           parent chain walk. This handles user-written scripts where &N
+           doesn't account for branch atoms in the flat stream.
+
+        3. If both fail, accept the flat target anyway (for canonical output
+           where the graph might not have open valences computed yet).
+
+        This fixes:
+        - Cholesterol: flat lookback works (parent chain was too short)
+        - Aspirin: parent chain fallback works (flat target was a branch atom)
+        - Canonical output: flat lookback always works (parser matches canonicalizer)
         """
         if atom_idx is None or ring_size < 2:
             return None
 
-        # Prefer flat emitted-stream arithmetic (canonicalizer uses this),
-        # but only accept it if the current graph already contains a path
-        # of the requested topological length between the two atoms. This
-        # lets canonical strings roundtrip while preserving parent-chain
-        # semantics for user-written branched encodings.
+        # Step 1: Try flat lookback
         flat_target = atom_idx - (ring_size - 1)
         if 0 <= flat_target < len(self.mol.atoms):
-            path = self._find_existing_path(flat_target, atom_idx)
-            if path is not None:
-                # If the flat target equals the parent-chain target, prefer
-                # the flat target (common for canonical roundtrips). If it
-                # differs, don't greedily choose flat here because some
-                # user-written branched scripts expect parent-chain semantics.
-                parent = atom_idx
-                for _ in range(ring_size - 1):
-                    parent = self.parents.get(parent)
-                    if parent is None:
-                        break
-                # If the parent chain is absent (None) or matches the flat
-                # target, prefer flat. Absence of a parent chain commonly
-                # occurs when parsing canonical output where the emission
-                # ordering differs slightly; accepting flat in that case
-                # preserves canonical roundtrips.
-                if parent is None or parent == flat_target:
-                    return flat_target
+            # If the flat target has an open valence, it's a ring atom — accept
+            if self._atom_has_open_valence(flat_target):
+                return flat_target
+            # Flat target is a branch atom (no open valence) — try parent chain
 
-        # Fallback: walk parent chain (DFS emission history) and accept it
-        # only if it corresponds to a path of the requested size.
+        # Step 2: Parent chain fallback for user-written scripts
         target = atom_idx
         for _ in range(ring_size - 1):
             target = self.parents.get(target)
             if target is None:
-                return None
-        path = self._find_existing_path(target, atom_idx)
-        if path is not None and len(path) == ring_size:
-            # Debug hook:
-            # print(f"_get_v2_ring_target: using parent_target {target} for atom {atom_idx} ring_size {ring_size}")
+                break
+        if target is not None and 0 <= target < len(self.mol.atoms):
             return target
 
+        # Step 3: Last resort — accept flat target even without open valence
+        # (for canonical output where valence tracking might differ)
+        if 0 <= flat_target < len(self.mol.atoms):
+            return flat_target
+
         return None
+
+    def _atom_has_open_valence(self, atom_idx: int) -> bool:
+        """Check if an atom has an open valence (available bond slot).
+
+        An atom with an open valence can accept a ring closure bond.
+        This is the SELFIES Xi nonterminal state: the atom still has
+        unfilled valence slots.
+
+        Atoms inside branches (e.g., the O in C(=O)O) are typically
+        fully saturated and don't have open valences. Ring atoms that
+        are waiting for a ring closure DO have open valences.
+        """
+        if atom_idx < 0 or atom_idx >= len(self.mol.atoms):
+            return False
+
+        atom = self.mol.atoms[atom_idx]
+        # Get the atom's current bond count (explicit bonds in the graph)
+        current_bonds = len(self.mol.adj.get(atom_idx, []))
+
+        # Add implicit Hs to the bond count
+        current_bonds += getattr(atom, 'implicit_hs', 0) or 0
+
+        # Get the maximum valence for this element
+        max_val = self._get_max_valence(atom_idx)
+
+        # The atom has an open valence if current bonds < max valence
+        return current_bonds < max_val
 
     def _find_existing_path(self, start_idx: int, end_idx: int) -> Optional[List[int]]:
         """Find a path in the current graph before a ring closure bond is added."""

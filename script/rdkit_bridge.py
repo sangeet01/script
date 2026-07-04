@@ -328,10 +328,16 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Any]:
                 atom = Chem.Atom(atom_data.atomic_num)
                 atom.SetFormalCharge(atom_data.formal_charge)
                 atom.SetIsotope(atom_data.isotope)
-                atom.SetIsAromatic(getattr(atom_data, 'is_aromatic', False))
-                if atom_data.implicit_hs is not None:
+                # Don't set IsAromatic here — let RDKit's sanitization
+                # perceive aromaticity from the bond pattern. Setting it
+                # manually can cause kekulization failures for fused
+                # aromatic systems with exocyclic double bonds (caffeine).
+                if atom_data.implicit_hs is not None and atom_data.implicit_hs > 0:
                     atom.SetNumExplicitHs(atom_data.implicit_hs)
                     atom.SetNoImplicit(True)
+                else:
+                    # Let RDKit compute implicit Hs from valence
+                    atom.SetNoImplicit(False)
                 if getattr(atom_data, 'radical_electrons', 0):
                     atom.SetNumRadicalElectrons(atom_data.radical_electrons)
                 if getattr(atom_data, 'mapping', 0):
@@ -355,7 +361,8 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Any]:
 
         mol.UpdatePropertyCache(strict=False)
 
-        # Wire tetrahedral stereo
+        # Wire tetrahedral stereo (done before sanitization so chiral tags
+        # are present when RDKit runs AssignStereochemistry)
         for i, atom_data in enumerate(core_mol.atoms):
             stereo_t = getattr(atom_data, 'stereo_type', StereoType.NONE)
             tag = getattr(atom_data, '_initial_tag', 0)
@@ -431,28 +438,38 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Any]:
 
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         Chem.SetDoubleBondNeighborDirections(mol)
+
+        # Sanitization with kekulization handling.
+        # SCRIPT stores aromatic bonds as type 4 (AROMATIC). Some fused ring
+        # systems with exocyclic C=O (caffeine) can't be kekulized by RDKit.
+        # Strategy:
+        # 1. Try normal sanitization (works for most molecules)
+        # 2. If kekulization fails, skip kekulization and keep aromatic bonds
+        #    as-is (RDKit can still generate SMILES with aromatic notation)
+        # 3. If that also fails, convert aromatic to single (lossy fallback)
         try:
             Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
         except Exception:
-            # Kekulization failed (e.g., fused aromatic ring with exocyclic
-            # C=O groups like caffeine where RDKit can't find a valid Kekulé
-            # structure). Try kekulizing with clearAromaticFlags=True, which
-            # converts aromatic bonds to alternating single/double and clears
-            # aromatic flags. If that also fails, fall back to clearing all
-            # aromatic info and using single bonds + implicit Hs.
             try:
-                Chem.Kekulize(mol, clearAromaticFlags=True)
-                Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+                # Skip kekulization — keep aromatic bonds as AROMATIC
+                Chem.SanitizeMol(mol, 
+                    Chem.SanitizeFlags.SANITIZE_ALL ^ 
+                    Chem.SanitizeFlags.SANITIZE_PROPERTIES ^
+                    Chem.SanitizeFlags.SANITIZE_KEKULIZE)
             except Exception:
+                # Last resort: clear all aromatic info
                 for atom in mol.GetAtoms():
                     atom.SetIsAromatic(False)
-                    atom.SetNoImplicit(False)  # allow implicit Hs to fill valence
+                    atom.SetNoImplicit(False)
                 for bond in mol.GetBonds():
                     if bond.GetBondType() == Chem.BondType.AROMATIC:
                         bond.SetBondType(Chem.BondType.SINGLE)
                     bond.SetIsAromatic(False)
                 mol.UpdatePropertyCache(strict=False)
-                Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+                try:
+                    Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+                except Exception:
+                    pass
 
         # Re-apply radical electrons after sanitization
         for i, atom_data in enumerate(core_mol.atoms):
