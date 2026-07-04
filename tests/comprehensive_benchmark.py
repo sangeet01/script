@@ -135,18 +135,15 @@ def test(category: str, name: str, condition: bool, detail: str = "",
          expected: Any = None, actual: Any = None):
     if condition:
         results.add(category, name, "PASS", detail, expected, actual)
-        if args and args.verbose:
-            print(f"  [PASS] {name}")
+        print(f"  [PASS] {category}: {name}")
     else:
         results.add(category, name, "FAIL", detail, expected, actual)
-        if args and args.verbose:
-            print(f"  [FAIL] {name}: {detail}")
+        print(f"  [FAIL] {category}: {name}: {detail}")
 
 
 def skip(category: str, name: str, reason: str):
     results.add(category, name, "SKIP", reason)
-    if args and args.verbose:
-        print(f"  [SKIP] {name}: {reason}")
+    print(f"  [SKIP] {category}: {name}: {reason}")
 
 
 # Category 1: Basic Organic
