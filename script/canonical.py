@@ -48,6 +48,51 @@ class SCRIPTCanonicalizer:
         """Deprecated: Use canonicalize_core or rdkit_bridge.SCRIPTFromMol."""
         return self.canonicalize_core(mol)
 
+    def canonicalize_mols(self, mol_or_list) -> Optional[str]:
+        """Canonicalize a CoreMolecule *or* a list of CoreMolecule fragments.
+
+        The parser returns a list when the input SCRIPT contains `.` (solvate)
+        or `~` (ionic pair) fragment separators. Each fragment carries its own
+        ``fragment_separator`` attribute (set by the parser) indicating which
+        token precedes it; the first fragment's separator is ignored.
+
+        This helper exists because :meth:`canonicalize_core` only accepts a
+        single CoreMolecule and would crash on a list. Callers that already
+        hold a parsed ``result["molecule"]`` value should use this method
+        instead of :meth:`canonicalize_core` to be robust against both shapes.
+        """
+        # Single CoreMolecule — delegate to existing path.
+        if not isinstance(mol_or_list, list):
+            return self.canonicalize_core(mol_or_list)
+
+        # Empty list — nothing to canonicalize.
+        if not mol_or_list:
+            return None
+
+        # Single-element list — unwrap and delegate.
+        if len(mol_or_list) == 1:
+            return self.canonicalize_core(mol_or_list[0])
+
+        # Multi-fragment: canonicalize each, join with per-fragment separator.
+        # Skip the first fragment's stored separator (nothing precedes it).
+        parts = []
+        for i, frag in enumerate(mol_or_list):
+            s = self.canonicalize_core(frag)
+            if not s:
+                # Empty fragment — preserve as empty placeholder so separators
+                # stay aligned, but skip the separator join for it.
+                continue
+            if i == 0:
+                parts.append(s)
+            else:
+                sep = getattr(frag, "fragment_separator", ".") or "."
+                parts.append(sep)
+                parts.append(s)
+
+        if not parts:
+            return None
+        return "".join(parts)
+
     def canonicalize_core(self, mol: CoreMolecule) -> Optional[str]:
         """Convert a CoreMolecule to its canonical SCRIPT string."""
         if not mol.atoms:
@@ -480,4 +525,6 @@ def canonicalize_SCRIPT(script_string):
     p = SCRIPTParser()
     result = p.parse(script_string)
     if not result["success"]: return None
-    return SCRIPTCanonicalizer().canonicalize_core(result["molecule"])
+    # result["molecule"] may be a CoreMolecule or a list[CoreMolecule]
+    # (parser returns a list for `.` / `~` multi-fragment inputs).
+    return SCRIPTCanonicalizer().canonicalize_mols(result["molecule"])

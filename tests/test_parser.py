@@ -291,5 +291,84 @@ def test_convenience_function():
     assert len(result["atoms"]) == 3
 
 
+class TestMultiFragmentCanonicalization:
+    """Regression tests for multi-fragment (salt/solvate/ionic pair) handling.
+
+    The parser intentionally returns ``list[CoreMolecule]`` when the input
+    SCRIPT contains ``.`` (solvate) or ``~`` (ionic pair) separators.
+    ``canonicalize_core`` only accepts a single CoreMolecule and would crash
+    on the list shape; ``canonicalize_mols`` was added to handle both.
+    These tests pin that contract so the bug cannot silently return.
+    """
+
+    def setup_method(self):
+        self.parser = SCRIPTParser()
+        self.canon = SCRIPTCanonicalizer()
+
+    def test_parser_returns_list_for_dot_separator(self):
+        """``.`` between components must produce a list of fragments."""
+        result = self.parser.parse("CN(C)C(=N)N=C(N)N.[Cl-]")
+        assert result["success"]
+        mol = result["molecule"]
+        assert isinstance(mol, list), "Multi-fragment input must return a list"
+        assert len(mol) == 2
+        assert len(mol[0].atoms) == 9   # metformin cation
+        assert len(mol[1].atoms) == 1   # chloride anion
+
+    def test_parser_returns_list_for_tilde_separator(self):
+        """``~`` between components must produce a list with ionic-pair sep."""
+        result = self.parser.parse("[Na+]~[Cl-]")
+        assert result["success"]
+        mol = result["molecule"]
+        assert isinstance(mol, list)
+        assert len(mol) == 2
+        # The second fragment carries the separator that preceded it.
+        assert mol[1].fragment_separator == "~"
+
+    def test_canonicalize_mols_handles_single_mol(self):
+        """Passing a single CoreMolecule must delegate to canonicalize_core."""
+        result = self.parser.parse("CCO")
+        assert result["success"]
+        mol = result["molecule"]
+        # Single-fragment input -> CoreMolecule, not list
+        from script.mol import CoreMolecule
+        assert isinstance(mol, CoreMolecule)
+        out = self.canon.canonicalize_mols(mol)
+        assert out is not None
+        # And the unwrapped-list path must give the same string.
+        out_list = self.canon.canonicalize_mols([mol])
+        assert out == out_list
+
+    def test_canonicalize_mols_handles_multi_fragment(self):
+        """canonicalize_mols must accept a list and join with separators."""
+        result = self.parser.parse("CN(C)C(=N)N=C(N)N.[Cl-]")
+        mol = result["molecule"]
+        out = self.canon.canonicalize_mols(mol)
+        assert out is not None
+        assert "." in out, "Multi-fragment canonical must contain `.` separator"
+        # Round-trip: re-parse the canonical string, must succeed and stay stable.
+        r2 = self.parser.parse(out)
+        assert r2["success"]
+        out2 = self.canon.canonicalize_mols(r2["molecule"])
+        assert out == out2, f"Multi-fragment canonical not stable: {out} -> {out2}"
+
+    def test_canonicalize_script_handles_multi_fragment(self):
+        """The top-level canonicalize_SCRIPT helper must handle multi-fragment."""
+        from script.canonical import canonicalize_SCRIPT
+        out = canonicalize_SCRIPT("CN(C)C(=N)N=C(N)N.[Cl-]")
+        assert out is not None
+        assert "." in out
+        # Idempotent.
+        assert canonicalize_SCRIPT(out) == out
+
+    def test_canonicalize_script_preserves_tilde_separator(self):
+        """``~`` (ionic pair) separator must survive canonicalization."""
+        from script.canonical import canonicalize_SCRIPT
+        out = canonicalize_SCRIPT("[Na+]~[Cl-]")
+        assert out is not None
+        assert "~" in out, "Ionic-pair `~` separator must survive canonicalization"
+        assert canonicalize_SCRIPT(out) == out
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

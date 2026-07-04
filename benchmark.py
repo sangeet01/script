@@ -11,6 +11,33 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'script'))
 
 from script.parser import SCRIPTParser
 from script.canonical import SCRIPTCanonicalizer
+from script.mol import CoreMolecule
+
+
+def _iter_molecules(mol_or_list):
+    """Yield CoreMolecule instances from either a single mol or a list.
+
+    The SCRIPT parser returns a `list[CoreMolecule]` for `.` / `~` separated
+    multi-fragment inputs (salts, solvates, ionic pairs) and a single
+    CoreMolecule otherwise. Benchmark accounting needs to aggregate atom and
+    bond counts across all fragments, so we normalise both shapes to an
+    iterable here.
+    """
+    if mol_or_list is None:
+        return []
+    if isinstance(mol_or_list, list):
+        return [m for m in mol_or_list if isinstance(m, CoreMolecule)]
+    if isinstance(mol_or_list, CoreMolecule):
+        return [mol_or_list]
+    return []
+
+
+def _atom_bond_counts(mol_or_list):
+    """Return (total_atoms, total_bonds) across all fragments."""
+    mols = _iter_molecules(mol_or_list)
+    n_atoms = sum(len(m.atoms) for m in mols)
+    n_bonds = sum(len(m.bonds) for m in mols)
+    return n_atoms, n_bonds
 
 # The 10 drugs explicitly claimed in the README
 DRUG_DATASET = [
@@ -57,12 +84,17 @@ def run_benchmark():
                 continue
 
             mol = result["molecule"]
-            if mol is None:
+            mols_in = _iter_molecules(mol)
+            if not mols_in:
                 print(f"{name:<20} | SKIP | No molecule generated")
                 skipped += 1
                 continue
 
-            script_out = canonicalizer.canonicalize_core(mol)
+            # canonicalize_mols handles both a single CoreMolecule and a
+            # list[CoreMolecule] (multi-fragment salts / solvates / ionic
+            # pairs). Using canonicalize_core here would crash on the list
+            # shape — that was the original benchmark bug.
+            script_out = canonicalizer.canonicalize_mols(mol)
             if script_out is None:
                 print(f"{name:<20} | FAIL | Canonicalization returned None")
                 failed += 1
@@ -74,10 +106,8 @@ def run_benchmark():
                 failed += 1
                 continue
 
-            mol_in = result["molecule"]
-            mol_out = result2["molecule"]
-            atoms_in = len(mol_in.atoms) if hasattr(mol_in, "atoms") else 0
-            atoms_out = len(mol_out.atoms) if hasattr(mol_out, "atoms") else 0
+            atoms_in, bonds_in = _atom_bond_counts(result["molecule"])
+            atoms_out, bonds_out = _atom_bond_counts(result2["molecule"])
 
             if atoms_in != atoms_out:
                 print(f"{name:<20} | FAIL | Atom count mismatch: {atoms_in} vs {atoms_out}")
@@ -86,15 +116,13 @@ def run_benchmark():
                 failed += 1
                 continue
 
-            bonds_in = len(mol_in.bonds) if hasattr(mol_in, "bonds") else 0
-            bonds_out = len(mol_out.bonds) if hasattr(mol_out, "bonds") else 0
-
             if bonds_in != bonds_out:
                 print(f"{name:<20} | FAIL | Bond count mismatch: {bonds_in} vs {bonds_out}")
                 failed += 1
                 continue
 
-            print(f"{name:<20} | PASS | Round-trip OK ({atoms_in} atoms, {bonds_in} bonds)")
+            frag_note = f" ({len(mols_in)} fragments)" if len(mols_in) > 1 else ""
+            print(f"{name:<20} | PASS | Round-trip OK ({atoms_in} atoms, {bonds_in} bonds{frag_note})")
             print(f"  Canonical: {script_out}")
             passed += 1
 
