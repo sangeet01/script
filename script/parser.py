@@ -463,19 +463,16 @@ class SCRIPTInterpreter(Interpreter):
 
     def _parse_query_atom(self, query_tree) -> dict:
         """Parse a query_atom tree into a dict of query fields for CoreAtom."""
+        from .mol import ATOMIC_NUM_TO_SYMBOL
+
         result = {'symbol': '*', 'query_atomic_nums': [], 'query_not': False,
                   'query_ring': None, 'query_valence': None,
                   'query_hcount': None, 'query_aromatic': None,
                   'query_primitives': []}
         self._parse_query_primitives(query_tree, result)
-        # If only one atomic number, use it as the symbol
+        # If only one atomic number, use it as the symbol for query readability
         if len(result['query_atomic_nums']) == 1:
-            from rdkit.Chem import GetPeriodicTable
-            try:
-                pt = GetPeriodicTable()
-                result['symbol'] = pt.GetElementSymbol(result['query_atomic_nums'][0])
-            except Exception:
-                result['symbol'] = '*'
+            result['symbol'] = ATOMIC_NUM_TO_SYMBOL.get(result['query_atomic_nums'][0], '*')
         return result
 
     def _parse_query_primitives(self, tree, result: dict):

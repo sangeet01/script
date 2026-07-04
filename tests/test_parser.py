@@ -87,10 +87,11 @@ class TestSCRIPTParser:
 
     def test_tautomeric_bonds(self):
         """Test mobile tautomeric bond"""
-        result = self.parser.parse("C=:C-C")
-        assert result["success"]
-        mol = result["molecule"]
-        assert any(b.bond_type == BondType.TAUTOMERIC for b in mol.bonds)
+        for script in ["C=:C-C", "C~:C-C"]:
+            result = self.parser.parse(script)
+            assert result["success"], f"Failed to parse tautomeric bond: {script}"
+            mol = result["molecule"]
+            assert any(b.bond_type == BondType.TAUTOMERIC for b in mol.bonds), f"No tautomeric bond found in {script}"
 
     def test_non_tetrahedral_stereo(self):
         """Test extended stereochemistry types"""
@@ -184,6 +185,9 @@ class TestSCRIPTParser:
             assert result["success"], f"Failed: {script}"
             atom = result["molecule"].atoms[0]
             assert atom.is_query, f"Not marked as query: {script}"
+            if script.startswith("[#6]"):
+                assert atom.query_atomic_nums == [6]
+                assert atom.symbol == "C"
 
     def test_peptides(self):
         """Test peptide notation parsing"""

@@ -217,7 +217,7 @@ bond: DATIVE             // Dative:         ->
     | DOUBLE_BOND        // Double:          =
     | TRIPLE_BOND        // Triple:          #
     | AROMATIC_BOND      // Aromatic:        :
-    | EXPLICIT_MOBILE    // Tautomeric:     =:
+    | EXPLICIT_MOBILE    // Tautomeric:     =: or ~:
     | UP_BOND            // Stereo up:       /
     | DOWN_BOND          // Stereo down:     \
     | COORDINATE_BOND    // Coordinate:      >
@@ -232,7 +232,7 @@ SINGLE_BOND: "-"
 DOUBLE_BOND: "="
 TRIPLE_BOND: "#"
 AROMATIC_BOND: ":"
-EXPLICIT_MOBILE: "~:"
+EXPLICIT_MOBILE: "~:" | "=:"
 UP_BOND: "/"
 DOWN_BOND: "\\"
 COORDINATE_BOND: ">"
