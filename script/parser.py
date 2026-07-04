@@ -187,7 +187,7 @@ class SCRIPTInterpreter(Interpreter):
                 self._next_bond_order = -1 
                 self._next_bond_dir = 0
             elif data == 'branch':
-                count = self._get_multiplier(child)
+                count = self._get_multiplier(child) or 1
                 for _ in range(count):
                     self.state.open_branch()
                     self.visit(child)
@@ -355,9 +355,17 @@ class SCRIPTInterpreter(Interpreter):
 
     def atom_expr(self, tree):
         count = self._get_multiplier(tree)
-        legacy_ring_count = count if self._is_legacy_ring_closure_candidate(tree, count) else None
-        if legacy_ring_count is not None:
+        # count is None when there's no digit after the atom (the common case).
+        # A non-None count means there IS a digit — it's either a multiplier
+        # (C3 = three carbons) or a SMILES-style ring closure (C1...C1).
+        # _is_legacy_ring_closure_candidate decides which interpretation applies.
+        if count is None:
             count = 1
+            legacy_ring_count = None
+        else:
+            legacy_ring_count = count if self._is_legacy_ring_closure_candidate(tree, count) else None
+            if legacy_ring_count is not None:
+                count = 1
         
         # Find the actual atom child
         atom_node = None
@@ -401,7 +409,12 @@ class SCRIPTInterpreter(Interpreter):
             self._next_translation = (0, 0, 0)
 
         if legacy_ring_count is not None:
-            self.state.add_ring(legacy_ring_count, bond_order=1)
+            # SMILES-style ring closures use digit pairs (1...1, 2...2).
+            # The digit is a register LABEL, not a ring size. Pass as string
+            # so add_ring uses the named-register path (first call stores
+            # the register, second call closes the ring). Passing as int
+            # would hit the V2 back-count path and compute the wrong target.
+            self.state.add_ring(str(legacy_ring_count), bond_order=1)
             
     def _handle_bracket_atom(self, node):
         element = "C"
@@ -696,13 +709,22 @@ class SCRIPTInterpreter(Interpreter):
                 parent_mol.block_topology = block_kind
 
 
-    def _get_multiplier(self, tree) -> int:
+    def _get_multiplier(self, tree):
+        """Return the explicit multiplier INT, or None if no multiplier is present.
+
+        Returning None (instead of the previous default 1) lets callers
+        distinguish "no digit after this atom" from "digit 1 after this
+        atom".  This is critical for SMILES-style ring closures: ``C1``
+        means "C with ring-closure digit 1", while ``C`` (no digit) means
+        just "C".  The previous default of 1 caused every last-in-chain
+        atom to be misidentified as a ring-closure candidate.
+        """
         for child in tree.children:
             if isinstance(child, Tree) and child.data.lstrip('!') == 'multiplier':
                 for node in child.children:
                     if isinstance(node, Token) and node.type == 'INT':
                         return int(str(node))
-        return 1
+        return None
 
     def _parse_hcount(self, h_str: str) -> int:
         if h_str == "H": return 1
@@ -730,14 +752,22 @@ class SCRIPTInterpreter(Interpreter):
             for child in tree.children:
                 self._attach_parents(child, tree)
 
-    def _is_legacy_ring_closure_candidate(self, tree, count: int) -> bool:
-        if count < 3:
+    def _is_legacy_ring_closure_candidate(self, tree, count) -> bool:
+        # Any atom with an explicit digit multiplier is a SMILES-style ring
+        # closure (e.g. C1...C1, [C@@H]1CCCN1).  The digit is a register
+        # label, not a ring size or atom count.
+        #
+        # The previous implementation required the atom to be the LAST child
+        # of molecular_chain, which is wrong — ring closures appear in the
+        # MIDDLE of chains (e.g. [C@@H]1 in proline is followed by CCCN1).
+        # That caused the ring bond to be silently dropped, which in turn
+        # caused the chiral center to see only 2 of its 4 neighbors.
+        if count is None or count < 1:
             return False
         parent = getattr(tree, 'parent', None)
         if parent is None or parent.data.lstrip('!') != 'molecular_chain':
             return False
-        child_trees = [c for c in parent.children if isinstance(c, Tree)]
-        return child_trees and child_trees[-1] is tree
+        return True
 
     def local_ring(self, tree):
         # Check for V2 ring closures: &INT: or &INT.
@@ -765,7 +795,10 @@ class SCRIPTInterpreter(Interpreter):
             self.state.add_ring(letter, bond_order=self._next_bond_order)
         else:
             ring_num = self._parse_ring_num(tree)
-            self.state.add_ring(ring_num, bond_order=self._next_bond_order)
+            # Legacy SMILES-style ring closures use digit pairs (1...1, 2...2).
+            # The digit is a register LABEL, not a ring size. Pass as string
+            # so add_ring uses the named-register path.
+            self.state.add_ring(str(ring_num), bond_order=self._next_bond_order)
 
     def _parse_ring_num(self, tree) -> int:
         # Collect all tokens in order

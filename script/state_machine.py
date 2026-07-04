@@ -76,18 +76,44 @@ class GenerativeStateMachine:
             elif chiral == '@@':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.TETRAHEDRAL
+            elif chiral in ('@SP1', '@SP2'):
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.SQUARE_PLANAR
+                atom._polyhedral_variant = int(chiral[-1])
             elif chiral == '@SP':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.SQUARE_PLANAR
+            elif chiral in ('@OH1', '@OH2', '@OH3', '@OH4', '@OH5'):
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.OCTAHEDRAL
+                atom._polyhedral_variant = int(chiral[-1])
             elif chiral == '@OH':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.OCTAHEDRAL
+            elif chiral == '@AX1':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.ATROPISOMER
+                atom._is_allene_centre = True
+                atom._allene_parity = 1
+            elif chiral == '@AX2':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.ATROPISOMER
+                atom._is_allene_centre = True
+                atom._allene_parity = 2
             elif chiral == '@AX':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.ATROPISOMER
+            elif chiral in ('@TB1', '@TB2'):
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TRIG_BIPYRAMIDAL
+                atom._polyhedral_variant = int(chiral[-1])
             elif chiral == '@TB':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.TRIG_BIPYRAMIDAL
+            elif chiral in ('@PY1', '@PY2'):
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.PYRAMIDAL
+                atom._polyhedral_variant = int(chiral[-1])
             elif chiral == '@PY':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.PYRAMIDAL
@@ -264,28 +290,50 @@ class GenerativeStateMachine:
 
     def add_ring(self, identifier: Any, bond_order: int = -1):
         """Close a ring using back-counting (int) or named register (str).
-        
-        For integer identifiers: identifier is "how many atoms back" in the linear string.
-        - identifier=1: current atom itself (invalid/ignored)
-        - identifier=2: previous atom
-        - identifier=N: the atom at position (current_idx - N + 1)
-        
-        This matches the flat position-based encoding in canonical.py.
+
+        Supports two notations:
+        1. SMILES-style register pairs: ``C1...C1`` — digit is a register
+           label. First call stores the register, second call closes the ring.
+        2. V1 back-count: ``CCCCCC6`` — digit is a ring size. A single
+           digit ≥ 3 at the end of a chain means "close a ring of N atoms
+           by connecting back N-1 positions".
+
+        For string identifiers (SMILES style):
+        - If the register exists → close the ring (second call)
+        - If the register doesn't exist AND the string is a digit ≥ 3 →
+          treat as V1 back-count (close ring of that size immediately)
+        - If the register doesn't exist AND digit < 3 → store the register
+          (first call of a SMILES pair)
         """
         if self.current_atom_idx is None: return
-        
+
         target_idx = -1
         if isinstance(identifier, int):
-            # identifier is "how many atoms back" from the current position
-            # Calculate target using flat linear position arithmetic
+            # V1 back-count: identifier is "how many atoms back"
             target_idx = self.current_atom_idx - (identifier - 1)
         elif isinstance(identifier, str):
             if identifier in self.registers:
+                # SMILES pair: second call — close the ring
                 target_idx = self.registers[identifier]
+                # Delete the register so the digit can be reused for a
+                # new ring (SMILES convention: 1...1...1...1 = two rings)
+                del self.registers[identifier]
             else:
-                self.registers[identifier] = self.current_atom_idx
-                return
-                
+                # Check if this could be a V1 back-count (digit ≥ 3)
+                try:
+                    ring_size = int(identifier)
+                    if ring_size >= 3:
+                        # V1 back-count: close ring of this size immediately
+                        target_idx = self.current_atom_idx - (ring_size - 1)
+                    else:
+                        # Digit 1 or 2: SMILES register — store for later
+                        self.registers[identifier] = self.current_atom_idx
+                        return
+                except ValueError:
+                    # Non-numeric string: store as register (named ring)
+                    self.registers[identifier] = self.current_atom_idx
+                    return
+
         if 0 <= target_idx < len(self.mol.atoms):
             self.add_bond(self.current_atom_idx, target_idx, bond_order)
             # Mark the bond as a ring closure for the target

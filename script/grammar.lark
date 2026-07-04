@@ -159,33 +159,37 @@ QUERY_ELEM: "He"|"Li"|"Be"|"Ne"|"Na"|"Mg"|"Al"|"Si"|"Cl"|"Ar"|"Ca"|"Sc"|"Ti"|"Cr
           | "Te"|"Xe"|"Cs"|"Ba"|"Pt"|"Au"|"Hg"|"Pb"|"Bi"|"Rn"
           | "B"|"C"|"N"|"O"|"F"|"P"|"S"|"I"|"K"|"V"|"W"|"Y"|"U"|"H"
 
-// Full Periodic Table (all 118 elements, uppercase only)
-element: "He" | "Li" | "Be" | "Ne"
-       | "Na" | "Mg" | "Al" | "Si" | "Cl" | "Ar"
-       | "Ca" | "Sc" | "Ti" | "Cr" | "Mn" | "Fe" | "Co" | "Ni" | "Cu" | "Zn"
-       | "Ga" | "Ge" | "As" | "Se" | "Br" | "Kr" | "Rb" | "Sr" | "Zr"
-       | "Nb" | "Mo" | "Tc" | "Ru" | "Rh" | "Pd" | "Ag" | "Cd" | "In" | "Sn"
-       | "Sb" | "Te" | "Xe" | "Cs" | "Ba" | "La" | "Ce" | "Pr" | "Nd"
-       | "Pm" | "Sm" | "Eu" | "Gd" | "Tb" | "Dy" | "Ho" | "Er" | "Tm" | "Yb"
-       | "Lu" | "Hf" | "Ta" | "Re" | "Os" | "Ir" | "Pt" | "Au" | "Hg"
-       | "Tl" | "Pb" | "Bi" | "Po" | "At" | "Rn" | "Fr" | "Ra" | "Ac" | "Th"
-       | "Pa" | "Np" | "Pu" | "Am" | "Cm" | "Bk" | "Cf" | "Es" | "Fm"
-       | "Md" | "No" | "Lr" | "Rf" | "Db" | "Sg" | "Bh" | "Hs" | "Mt" | "Ds"
-       | "Rg" | "Cn" | "Nh" | "Fl" | "Mc" | "Lv" | "Ts" | "Og"
-       | "H" | "B" | "C" | "N" | "O" | "F" | "P" | "S" | "I" | "K" | "V" | "W" | "Y" | "U"
+// Full Periodic Table — all 118 elements.
+// Uses the ATOM terminal (defined below) so that Lark's lexer applies
+// consistent longest-match priority across all element-matching contexts
+// (bracket_atom, dhatu, query_atom).  Previously, the element rule used
+// inline string literals which competed with ATOM and QUERY_ELEM for
+// lexer priority, causing "Ir" to lex as "I" + "r".
+element: ATOM
 
 // Isotope (mass number before element symbol)
 isotope: INT
 
 // Complete Stereochemistry Support (Anchored to DFS Vak Order)
 chiral: "@@"        // Tetrahedral S   (must precede "@" for longest match)
-      | "@SP"       // Square planar
-      | "@OH"       // Octahedral
+      | "@SP1"      // Square planar — cis
+      | "@SP2"      // Square planar — trans
+      | "@SP"       // Square planar (unspecified geometry)
+      | "@OH1"      // Octahedral — fac (Δ)
+      | "@OH2"      // Octahedral — fac (Λ)
+      | "@OH3"      // Octahedral — mer variant 1
+      | "@OH4"      // Octahedral — mer variant 2
+      | "@OH5"      // Octahedral — mer variant 3
+      | "@OH"       // Octahedral (unspecified geometry)
       | "@AX1"      // Allene / atropisomer CW   (geometry-resolved)
       | "@AX2"      // Allene / atropisomer CCW  (geometry-resolved)
       | "@AX"       // Axial / atropisomer (unresolved, no 3D coords)
-      | "@TB"       // Trigonal bipyramidal
-      | "@PY"       // Pyramidal
+      | "@TB1"      // Trigonal bipyramidal — apical substitution A
+      | "@TB2"      // Trigonal bipyramidal — apical substitution B
+      | "@TB"       // Trigonal bipyramidal (unspecified)
+      | "@PY1"      // Pyramidal — CW
+      | "@PY2"      // Pyramidal — CCW
+      | "@PY"       // Pyramidal (unspecified)
       | "@"         // Tetrahedral R
 
 // Hydrogen count inside brackets
@@ -412,7 +416,13 @@ DIGIT: "0".."9"
 LETTER: "A".."Z"
 
 // ATOM terminal used by dhatu (V2 atom notation)
-ATOM: "He"|"Li"|"Be"|"Ne"|"Na"|"Mg"|"Al"|"Si"|"Cl"|"Ar"|"Ca"|"Sc"|"Ti"|"Cr"|"Mn"|"Fe"|"Co"|"Ni"|"Cu"|"Zn"|"Br"|"Kr"|"Rb"|"Sr"|"Zr"|"Pd"|"Ag"|"Cd"|"Sn"|"Sb"|"Te"|"Xe"|"Pt"|"Au"|"Hg"|"Pb"|"Bi"|"Rn"|"C"|"N"|"O"|"F"|"P"|"S"|"K"|"V"|"I"|"W"|"U"
+// ATOM terminal — all 118 elements.  Two-letter symbols must come BEFORE
+// single-letter ones in the alternation so that Lark's lexer (longest-match
+// priority) picks e.g. "Ir" instead of "I" + "r".  Many transition metals
+// (Ir, Hf, Ta, Re, Os, Tc, Ru, Rh, Nb, Mo, ...) and lanthanides/actinides
+// were previously missing, causing "[Ir@SP]" to lex as "I" (iodine) + "r".
+ATOM: "He"|"Li"|"Be"|"Ne"|"Na"|"Mg"|"Al"|"Si"|"Cl"|"Ar"|"Ca"|"Sc"|"Ti"|"Cr"|"Mn"|"Fe"|"Co"|"Ni"|"Cu"|"Zn"|"Ga"|"Ge"|"As"|"Se"|"Br"|"Kr"|"Rb"|"Sr"|"Zr"|"Nb"|"Mo"|"Tc"|"Ru"|"Rh"|"Pd"|"Ag"|"Cd"|"In"|"Sn"|"Sb"|"Te"|"Xe"|"Cs"|"Ba"|"La"|"Ce"|"Pr"|"Nd"|"Pm"|"Sm"|"Eu"|"Gd"|"Tb"|"Dy"|"Ho"|"Er"|"Tm"|"Yb"|"Lu"|"Hf"|"Ta"|"Re"|"Os"|"Ir"|"Pt"|"Au"|"Hg"|"Tl"|"Pb"|"Bi"|"Po"|"At"|"Rn"|"Fr"|"Ra"|"Ac"|"Th"|"Pa"|"Np"|"Pu"|"Am"|"Cm"|"Bk"|"Cf"|"Es"|"Fm"|"Md"|"No"|"Lr"|"Rf"|"Db"|"Sg"|"Bh"|"Hs"|"Mt"|"Ds"|"Rg"|"Cn"|"Nh"|"Fl"|"Mc"|"Lv"|"Ts"|"Og"
+    | "C"|"N"|"O"|"F"|"P"|"S"|"K"|"V"|"I"|"W"|"U"|"Y"|"H"|"B"
 
 // Charge attribute terminal
 CHARGE_ATTR: "++" | "--" | "+" | "-" | /[0-9]+[+-]/ | /[+-][0-9]+/

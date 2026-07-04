@@ -196,12 +196,31 @@ class SCRIPTCanonicalizer:
         if len(start_candidates) == 1:
             return self._canonicalize_component_from_root(mol, atom_indices, start_candidates[0], ranks)
 
+        # When multiple start candidates exist (graph symmetry), we MUST pick
+        # the same root for both enantiomers — otherwise the lexicographic
+        # comparison of @/@@ markers causes enantiomers to collapse to the
+        # same canonical string (@@ < @ lexicographically, so both
+        # enantiomers end up picking the root that puts @@ first).
+        #
+        # Strategy: compute the canonical string from each candidate, but
+        # compare them with chirality markers stripped (so the root choice
+        # depends only on graph structure, not stereo). If the stripped
+        # strings are identical (symmetric molecule), pick the lowest-index
+        # root as a deterministic tie-breaker.
+        import re as _re
         canonical_forms = []
         for start_atom in start_candidates:
             canon = self._canonicalize_component_from_root(mol, atom_indices, start_atom, ranks)
             if canon is not None:
-                canonical_forms.append(canon)
-        return min(canonical_forms) if canonical_forms else None
+                stripped = _re.sub(r'@@?', '', canon)  # remove @ and @@
+                canonical_forms.append((stripped, start_atom, canon))
+
+        if not canonical_forms:
+            return None
+
+        # Sort by (stripped_string, start_atom_index) — chirality-independent
+        canonical_forms.sort(key=lambda x: (x[0], x[1]))
+        return canonical_forms[0][2]
 
     def _canonicalize_component_from_root(self, mol: CoreMolecule, atom_indices: List[int], start_atom: int, ranks: List[int]) -> Optional[str]:
         visited = set()
@@ -330,7 +349,7 @@ class SCRIPTCanonicalizer:
                         topo_size = current_position - target_position + 1
                         is_arom = mol.bonds[bond_idx].bond_type == BondType.AROMATIC
                         anubandha = ":" if is_arom else "-"
-                        bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol)
+                        bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol, ranks)
                         if is_arom: bond_sym = "" # redundant for &6:
                         ring_closures.append((topo_size, f"{bond_sym}&{topo_size}{anubandha}", nbr_idx))
                     else:
@@ -359,7 +378,7 @@ class SCRIPTCanonicalizer:
         # Build string parts
         parts = []
         if from_bond_idx >= 0:
-            parts.append(self._bond_symbol(mol.bonds[from_bond_idx], atom_idx, mol))
+            parts.append(self._bond_symbol(mol.bonds[from_bond_idx], atom_idx, mol, ranks))
 
         parts.append(self._atom_string(atom, atom_idx, mol, ranks, ordered_neighbors))
         
@@ -398,26 +417,43 @@ class SCRIPTCanonicalizer:
         if getattr(atom, 'is_wildcard', False) or atom.atomic_num == 0:
             return '*'
 
-        # Determine chiral symbol based on stereo_type
+        # Lopa rule (Paninian elision): for 3-coordinate tetrahedral centres
+        # on elements that carry a stereochemically-active lone pair (S, N, P,
+        # Se, Te, As, Sb), the lone pair is the 4th "ghost" neighbour —
+        # elided from the string but occupying a coordination position.
+        # Without this, sulfoxides (C[S@](=O)C) and similar 3-coordinate
+        # chiral centres lose their @/@@ marker because get_chiral_symbol
+        # requires exactly 4 ordered_neighbors.
         stereo_t = getattr(atom, 'stereo_type', StereoType.NONE)
+        LONE_PAIR_ELEMENTS = {'S', 'N', 'P', 'Se', 'Te', 'As', 'Sb'}
+        if (stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL)
+                and symbol in LONE_PAIR_ELEMENTS
+                and len(ordered_neighbors) == 3
+                and atom.implicit_hs == 0):
+            # Insert a lone-pair ghost at position 0 (lowest priority,
+            # matching how implicit H is handled in chiral.py:resolve).
+            ordered_neighbors = [-2] + list(ordered_neighbors)  # -2 = lone pair sentinel
+
+        # Determine chiral symbol based on stereo_type
         chiral_sym = ""
         if stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL):
             if len(ordered_neighbors) == 4:
                 chiral_sym = get_chiral_symbol(atom_idx, ordered_neighbors, mol, ranks)
         elif stereo_t == StereoType.SQUARE_PLANAR:
-            chiral_sym = "@SP"
+            variant = getattr(atom, '_polyhedral_variant', 0)
+            chiral_sym = f"@SP{variant}" if variant else "@SP"
         elif stereo_t == StereoType.OCTAHEDRAL:
-            chiral_sym = "@OH"
+            variant = getattr(atom, '_polyhedral_variant', 0)
+            chiral_sym = f"@OH{variant}" if variant else "@OH"
         elif stereo_t == StereoType.ATROPISOMER:
-            # Route through get_chiral_symbol so that the geometry-resolved
-            # @AX1 / @AX2 parity is used.  Falls back to bare "@AX" if the
-            # dihedral could not be computed (no 3D coords available).
             resolved = get_chiral_symbol(atom_idx, ordered_neighbors, mol, ranks)
             chiral_sym = resolved if resolved else "@AX"
         elif stereo_t == StereoType.TRIG_BIPYRAMIDAL:
-            chiral_sym = "@TB"
+            variant = getattr(atom, '_polyhedral_variant', 0)
+            chiral_sym = f"@TB{variant}" if variant else "@TB"
         elif stereo_t == StereoType.PYRAMIDAL:
-            chiral_sym = "@PY"
+            variant = getattr(atom, '_polyhedral_variant', 0)
+            chiral_sym = f"@PY{variant}" if variant else "@PY"
 
         if (symbol in ORGANIC_SUBSET
                 and atom.formal_charge == 0
@@ -455,7 +491,7 @@ class SCRIPTCanonicalizer:
         parts.append(']')
         return "".join(parts)
 
-    def _bond_symbol(self, bond, to_atom_idx, mol):
+    def _bond_symbol(self, bond, to_atom_idx, mol, ranks=None):
         bt = bond.bond_type
         # Typed bonds
         if bt == BondType.DOUBLE:     base = '='
@@ -471,10 +507,23 @@ class SCRIPTCanonicalizer:
         elif bt == 3: base = '#'
         elif bt == 4: base = ':'
         elif bond.bond_dir != 0:
-            is_reverse = (bond.end_atom_idx == to_atom_idx)
-            if bond.bond_dir in (1, 3):
+            # E/Z bond direction (/ or \). These are RELATIVE directions:
+            # / means "up" when reading left-to-right, \ means "down".
+            #
+            # bond_dir is stored from begin_atom_idx's perspective:
+            #   1, 3 = UP (bond goes up from begin to end)
+            #   2, 4 = DOWN (bond goes down from begin to end)
+            #
+            # When the DFS traverses the bond, we need to know if we're
+            # going forward (begin→end) or reverse (end→begin). If reverse,
+            # the direction flips: UP becomes DOWN and vice versa.
+            #
+            # The previous code had is_reverse inverted (True when forward),
+            # causing the direction to flip on every canonicalization pass.
+            is_reverse = (bond.begin_atom_idx == to_atom_idx)
+            if bond.bond_dir in (1, 3):  # UP from begin→end
                 base = '\\' if is_reverse else '/'
-            elif bond.bond_dir in (2, 4):
+            elif bond.bond_dir in (2, 4):  # DOWN from begin→end
                 base = '/' if is_reverse else '\\'
             else:
                 base = ''

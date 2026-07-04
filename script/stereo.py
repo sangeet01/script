@@ -43,50 +43,16 @@ def get_chiral_symbol(center_idx: int, ordered_neighbors: List[int],
     if CIP_AVAILABLE:
         cip_order = compute_cip_priorities(mol, center_idx)
         if len(cip_order) == 4 and len(ordered_neighbors) == 4:
-            # Get reference order (CIP or DFS)
             ref_nbrs = getattr(mol, '_chiral_ref_nbrs', {}).get(center_idx, cip_order)
-            
-            # Transform: stored bit (in ref frame) -> CIP -> DFS
             if ref_nbrs != cip_order:
-                # Stored bit is in ref frame, transform to CIP first
                 parity_ref_to_cip = permutation_parity(ref_nbrs, cip_order)
                 cip_bit = bit ^ parity_ref_to_cip
             else:
-                # Already in CIP space
                 cip_bit = bit
-            
-            # Transform from CIP to DFS
             parity_dfs_to_cip = permutation_parity(ordered_neighbors, cip_order)
             dfs_bit = cip_bit ^ parity_dfs_to_cip
             return "@" if dfs_bit == 0 else "@@"
-    
-    # Fallback: original reference frame approach
-    ref_nbrs = getattr(mol, '_chiral_ref_nbrs', {}).get(center_idx)
-    if ref_nbrs is None:
-        return ""
-
-    if len(ref_nbrs) != len(ordered_neighbors):
-        return ""
-
-    # Count transpositions from ref_nbrs -> ordered_neighbors
-    pos_map = {}
-    for i, idx in enumerate(ref_nbrs):
-        pos_map[idx] = i
-    try:
-        perm = [pos_map[idx] for idx in ordered_neighbors]
-    except KeyError:
-        return ""
-
-    swaps = 0
-    p = list(perm)
-    for i in range(len(p)):
-        for j in range(i + 1, len(p)):
-            if p[i] > p[j]:
-                swaps += 1
-
-    # Even swaps: same handedness as stored bit; odd: opposite
-    is_ccw = (bit == 0) if (swaps % 2 == 0) else (bit == 1)
-    return "@" if is_ccw else "@@"
+    return "@" if bit == 0 else "@@"
 
 
 def perceive_chirality(mol, ranks: List[int], dfs_neighbor_orders: Optional[dict] = None):

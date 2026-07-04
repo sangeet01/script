@@ -89,6 +89,28 @@ class ChiralResolver:
                 atom.chirality = CHI_NONE
                 continue
 
+            # Atropisomer / allene axial centre: parity is encoded directly
+            # in the marker (@AX1 = CW, @AX2 = CCW). No CIP resolution needed
+            # because axial stereo doesn't follow the tetrahedral 4-neighbour
+            # model. Store the bit and skip the CIP parity computation.
+            if getattr(atom, '_is_allene_centre', False):
+                parity = getattr(atom, '_allene_parity', 0)
+                if parity == 0:
+                    atom.chirality = CHI_NONE
+                    continue
+                # _allene_parity: 1 = CW, 2 = CCW
+                # SCRIPT bit convention: 0 = CCW (@), 1 = CW (@@)
+                bit = 1 if parity == 1 else 0
+                atom.chirality = CHI_CW if bit == 1 else CHI_CCW
+                if not hasattr(self.mol, 'chiral_centers'):
+                    self.mol.chiral_centers = {}
+                if not hasattr(self.mol, '_chiral_ref_nbrs'):
+                    self.mol._chiral_ref_nbrs = {}
+                self.mol.chiral_centers[idx] = bit
+                self.mol._chiral_ref_nbrs[idx] = list(getattr(atom, '_initial_nbrs', []))
+                self.mol._cip_based_stereo = True
+                continue
+
             # Vak Order: neighbors in the order they were spoken during DFS
             vak_order = list(getattr(atom, '_initial_nbrs', []))
 
@@ -96,7 +118,7 @@ class ChiralResolver:
             # insert H as a ghost at position 0 (lowest priority, spoken first)
             hcount = getattr(atom, 'implicit_hs', None)
             has_explicit_h = any(
-                self.mol.atoms[n].atomic_num == 1
+                n >= 0 and n < len(self.mol.atoms) and self.mol.atoms[n].atomic_num == 1
                 for n in vak_order
             )
             if not has_explicit_h and hcount and hcount > 0:
@@ -104,8 +126,28 @@ class ChiralResolver:
                 if -1 not in vak_order:
                     vak_order = [-1] + vak_order # -1 = implicit H sentinel
 
+            # Lopa Rule (extended): for 3-coordinate tetrahedral centres on
+            # elements with a stereochemically-active lone pair (S, N, P, Se,
+            # Te, As, Sb), the lone pair is the 4th ghost neighbour. Without
+            # this, sulfoxides and similar 3-coordinate chiral centres would
+            # never reach the 4-neighbour threshold and would be silently
+            # dropped as "not enough neighbours to define chirality".
+            LONE_PAIR_ELEMENTS = {'S', 'N', 'P', 'Se', 'Te', 'As', 'Sb'}
+            if (atom.symbol in LONE_PAIR_ELEMENTS
+                    and len(vak_order) == 3
+                    and hcount is not None and hcount == 0):
+                vak_order = [-2] + vak_order  # -2 = lone pair sentinel
+
             if len(vak_order) < 3:
-                # Not enough neighbors to define chirality
+                # Not enough neighbors to define chirality.  Note: with a
+                # lone-pair ghost (-2), 2 real neighbours + ghost = 3 total
+                # is still insufficient for tetrahedral stereo (need 4).
+                atom.chirality = CHI_NONE
+                continue
+
+            if len(vak_order) < 4:
+                # 3 neighbours (with or without a ghost H) is not enough for
+                # a tetrahedral centre. Need exactly 4.
                 atom.chirality = CHI_NONE
                 continue
 

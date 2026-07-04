@@ -42,6 +42,18 @@ def compute_cip_priorities(mol, atom_idx: int,
     neighbors = mol.get_neighbors(atom_idx)
     if mol.atoms[atom_idx].implicit_hs > 0:
         neighbors = neighbors + [-1]
+
+    # Lopa rule: add lone-pair ghost for 3-coordinate S/N/P/etc.
+    # The lone pair occupies the 4th tetrahedral position and must be
+    # included in the CIP ordering so that the parity computation in
+    # get_chiral_symbol sees a consistent 4-element neighbour list.
+    LONE_PAIR_ELEMENTS = {'S', 'N', 'P', 'Se', 'Te', 'As', 'Sb'}
+    atom_sym = getattr(mol.atoms[atom_idx], 'symbol', '')
+    if (atom_sym in LONE_PAIR_ELEMENTS
+            and len(neighbors) == 3
+            and mol.atoms[atom_idx].implicit_hs == 0):
+        neighbors = neighbors + [-2]
+
     if len(neighbors) < 2:
         return neighbors
 
@@ -54,6 +66,14 @@ def compute_cip_priorities(mol, atom_idx: int,
 
     priorities = []
     for nbr_idx in neighbors:
+        if nbr_idx == -2:
+            # Lone-pair ghost neighbour — lowest CIP priority
+            priorities.append(((0, 0), 1000001, -2))
+            continue
+        if nbr_idx == -1:
+            # Implicit H ghost neighbour
+            priorities.append(((1, 0), 1000000, -1))
+            continue
         priority = _compute_priority_tuple(mol, nbr_idx, atom_idx, depth=depth)
         rank = rank_map.get(nbr_idx, 999999) if nbr_idx != -1 else 1000000
         priorities.append((priority, rank, nbr_idx))
@@ -142,10 +162,12 @@ def permutation_parity(order_a: List[int], order_b: List[int],
         return 0
 
     def get_val(x):
+        if x == -1:
+            return 1000000   # implicit H — lowest priority
+        if x == -2:
+            return 1000001   # lone pair — even lower than implicit H
         if ranks is None:
             return x
-        if x == -1:
-            return 1000000
         return ranks.get(x, x)
 
     val_a = [get_val(x) for x in order_a]
