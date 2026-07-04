@@ -45,6 +45,7 @@ class TestSCRIPTParser:
         test_cases = [
             "CCCCCC&6-",
             "C:C:C:C:C:C&6:",
+            "CCCC(C&5-)CC&7-",
         ]
         for script in test_cases:
             result = self.parser.parse(script)
@@ -221,15 +222,25 @@ class TestSCRIPTParser:
         assert out is not None
         result2 = self.parser.parse(out)
         assert result2["success"]
+        out2 = self.canon.canonicalize_core(result2["molecule"])
+        assert out2 == out, f"Glucose canonical roundtrip failed: {out} != {out2}"
 
     def test_aspirin(self):
         """Aspirin: fused ring, ester, carboxylic acid"""
-        script = "C(C(=O)O):C(OC(=O)C):C:C:C:C&6:"
-        result = self.parser.parse(script)
-        assert result["success"]
-        mol = result["molecule"]
-        out = self.canon.canonicalize_core(mol)
-        assert out is not None
+        scripts = [
+            "C(C(=O)O):C(OC(=O)C):C:C:C:C&6:",
+            "C(OC(=O)C):C(C(=O)O):C:C:C:C&6:"
+        ]
+        canonical_results = []
+        for script in scripts:
+            result = self.parser.parse(script)
+            assert result["success"]
+            mol = result["molecule"]
+            out = self.canon.canonicalize_core(mol)
+            assert out is not None
+            canonical_results.append(out)
+        assert canonical_results[0] == canonical_results[1], \
+            f"Aspirin variants produced different canonical strings: {canonical_results}"
 
     def test_strychnine(self):
         """Strychnine: 7 fused rings, 6 stereocenters"""
