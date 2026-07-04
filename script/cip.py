@@ -28,10 +28,16 @@ ATOMIC_MASS = {
 }
 
 
-def compute_cip_priorities(mol, atom_idx: int) -> List[int]:
+def compute_cip_priorities(mol, atom_idx: int,
+                           rank_map: Optional[Dict[int, int]] = None) -> List[int]:
     """
     Returns neighbor indices sorted by CIP priority (highest first).
     Recursive depth is dynamically determined by molecule size (up to 15).
+
+    If ``rank_map`` is provided, it must be the result of
+    ``calculate_ranks(mol)`` for the *current* graph state. Passing it
+    explicitly avoids re-running the Morgan-WL loop once per chiral atom
+    when this function is called in a loop by ChiralResolver.resolve.
     """
     neighbors = mol.get_neighbors(atom_idx)
     if mol.atoms[atom_idx].implicit_hs > 0:
@@ -42,8 +48,9 @@ def compute_cip_priorities(mol, atom_idx: int) -> List[int]:
     # Dynamic depth: larger molecules need deeper exploration
     depth = min(15, max(5, len(mol.atoms) // 2))
 
-    from .ranking import calculate_ranks
-    rank_map = calculate_ranks(mol)
+    if rank_map is None:
+        from .ranking import calculate_ranks
+        rank_map = calculate_ranks(mol)
 
     priorities = []
     for nbr_idx in neighbors:

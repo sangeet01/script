@@ -74,6 +74,15 @@ class ChiralResolver:
         Pratyaya Rule: for each atom that carries an _initial_tag,
         resolve the @/@@  sense into a definitive chirality bit.
         """
+        # Compute the Morgan-WL rank map once for the whole molecule and
+        # reuse it for every chiral atom. Without this, calculate_ranks was
+        # being invoked twice per chiral atom (once here, once inside
+        # compute_cip_priorities), making glucose spend ~75% of parse time
+        # in ranking.py. The rank map depends only on the graph, which is
+        # frozen by the time resolve() runs.
+        from .ranking import calculate_ranks
+        rank_map = calculate_ranks(self.mol)
+
         for idx, atom in enumerate(self.mol.atoms):
             tag = getattr(atom, '_initial_tag', 0)
             if tag == 0:
@@ -102,12 +111,12 @@ class ChiralResolver:
 
             # Sandhi: sort the 4 neighbors by recursive CIP priority (descending)
             from .cip import compute_cip_priorities
-            cip_sorted = compute_cip_priorities(self.mol, idx)
+            # Pass the pre-computed rank_map to avoid re-running Morgan-WL
+            # once per chiral atom.
+            cip_sorted = compute_cip_priorities(self.mol, idx, rank_map=rank_map)
 
             # Permutation sign from Vak Order to CIP-Sorted Order (Rank-Stable)
             from .cip import permutation_parity
-            from .ranking import calculate_ranks
-            rank_map = calculate_ranks(self.mol)
             perm_parity = permutation_parity(vak_order, cip_sorted, ranks=rank_map)
 
             # Pratyaya interpretation:

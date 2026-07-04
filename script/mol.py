@@ -156,6 +156,14 @@ class CoreMolecule:
         self.chiral_centers: Dict[int, int] = {} # atom_idx -> chirality_bit (0:CCW, 1:CW)
         self.macroscopic_context: Optional[str] = None
 
+        # Graph version counter — bumped on every add_atom / add_bond /
+        # add_bond_obj call. Used as a cache key by ranking.calculate_ranks
+        # so that repeated calls (e.g. once per chiral atom in
+        # ChiralResolver.resolve) do not re-run the full Morgan-WL loop.
+        # Initialised to -1 so the first call always misses.
+        self._graph_version: int = -1
+        self._rank_cache: Optional[Dict[int, int]] = None
+
         # Tier 2 fields — semantic metadata above the atom/bond graph
         self.fragment_separator: str = "."      # "." solvate/salt | "~" ionic pair
         self.repeat_count: Optional[Any] = None # polymer: int, (min,max) tuple, or None
@@ -175,6 +183,7 @@ class CoreMolecule:
         idx = len(self.atoms)
         self.atoms.append(atom)
         self.adj[idx] = []
+        self._graph_version += 1
         return idx
 
     def add_bond(self, begin_idx: int, end_idx: int, bond_type: Any,
@@ -189,6 +198,7 @@ class CoreMolecule:
         self.adj[end_idx].append((begin_idx, bond_idx))
         if translation != (0, 0, 0):
             self.is_periodic = True
+        self._graph_version += 1
 
     def add_bond_obj(self, bond: CoreBond) -> None:
         """Add a pre-constructed CoreBond object. Used by PeptideHandler."""
@@ -201,6 +211,7 @@ class CoreMolecule:
             self.adj[bond.end_atom_idx] = []
         self.adj[bond.begin_atom_idx].append((bond.end_atom_idx, bond_idx))
         self.adj[bond.end_atom_idx].append((bond.begin_atom_idx, bond_idx))
+        self._graph_version += 1
 
     def get_neighbors(self, atom_idx: int) -> List[int]:
         return [nbr_idx for nbr_idx, _ in self.adj.get(atom_idx, [])]
