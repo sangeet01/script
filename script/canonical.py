@@ -213,8 +213,13 @@ class SCRIPTCanonicalizer:
             canon = self._canonicalize_component_from_root(mol, atom_indices, start_atom, ranks)
             if canon is not None:
                 # Strip ALL chiral markers (@, @@, @R, @S, @r, @s, @SP1, etc.)
-                # so root selection depends only on graph structure, not stereo.
+                # AND ring closure numbers (&N → &) so root selection depends
+                # only on graph structure (atom/bond sequence + ring closure
+                # positions), not on stereo markers or lookback distances.
+                # This ensures isomorphic graphs (like aspirin's two forms)
+                # pick the same root and produce the same canonical string.
                 stripped = _re.sub(r'@[A-Za-z]*[0-9]*', '', canon)
+                stripped = _re.sub(r'&[0-9]+', '&', stripped)
                 canonical_forms.append((stripped, start_atom, canon))
 
         if not canonical_forms:
@@ -344,11 +349,20 @@ class SCRIPTCanonicalizer:
             if bond_idx in ring_bonds_set:
                 if nbr_idx in atom_to_id:
                     if atom_to_id[nbr_idx] < atom_string_id:
-                        # FIXED: Calculate lookback based on flat linear string position, not depth
-                        # This is the critical fix for bridged rings
-                        target_position = atom_to_id[nbr_idx]
-                        current_position = atom_string_id
-                        topo_size = current_position - target_position + 1
+                        # Compute ring SIZE (number of atoms in the ring path
+                        # through the DFS tree), NOT flat position difference.
+                        # This ensures &N means "N-membered ring" on both sides:
+                        # - Canonicalizer: N = depth difference + 1 (tree path)
+                        # - Parser: N = parent chain walk N-1 steps
+                        # Previous flat position arithmetic included branch atoms,
+                        # making &6 become &9 for a 6-ring with 3 branches.
+                        target_depth = depths.get(nbr_idx, 1)
+                        current_depth = depths.get(atom_idx, 1)
+                        topo_size = current_depth - target_depth + 1
+                        if topo_size < 2:
+                            # Fallback to flat position if depth computation fails
+                            # (shouldn't happen in normal DFS, but guards edge cases)
+                            topo_size = atom_string_id - atom_to_id[nbr_idx] + 1
                         is_arom = mol.bonds[bond_idx].bond_type == BondType.AROMATIC
                         anubandha = ":" if is_arom else "-"
                         bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol, ranks)

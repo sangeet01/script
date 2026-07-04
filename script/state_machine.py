@@ -417,48 +417,39 @@ class GenerativeStateMachine:
                     b.is_aromatic = True
 
     def _get_v2_ring_target(self, atom_idx: int, ring_size: int) -> Optional[int]:
-        """Find the V2 ring closure target.
+        """Find the V2 ring closure target using parent chain walk.
 
-        SELFIES-inspired hybrid approach:
+        Grammar rule: &N means "close a ring of N atoms". The target is the
+        atom N-1 steps up the parent chain (DFS tree). This is the SAME
+        semantics as the canonicalizer, which computes N as the depth
+        difference between current and target atoms.
 
-        1. Try flat lookback (canonicalizer uses this): target = atom_idx - (N-1)
-           Accept if the target has an open valence (is a ring atom, not a
-           fully-saturated branch atom).
+        This replaces the previous flat-position approach which counted
+        branch atoms in the flat stream, making &6 become &9 for a 6-ring
+        with 3 branches. Now both sides agree: &N = ring size = tree path.
 
-        2. If flat target is a branch atom (no open valence), fall back to
-           parent chain walk. This handles user-written scripts where &N
-           doesn't account for branch atoms in the flat stream.
-
-        3. If both fail, accept the flat target anyway (for canonical output
-           where the graph might not have open valences computed yet).
-
-        This fixes:
-        - Cholesterol: flat lookback works (parent chain was too short)
-        - Aspirin: parent chain fallback works (flat target was a branch atom)
-        - Canonical output: flat lookback always works (parser matches canonicalizer)
+        For user-written scripts where the parent chain is shorter than
+        N-1 (e.g., ring closure at a branch point), fall back to flat
+        lookback as a last resort.
         """
         if atom_idx is None or ring_size < 2:
             return None
 
-        # Step 1: Try flat lookback
-        flat_target = atom_idx - (ring_size - 1)
-        if 0 <= flat_target < len(self.mol.atoms):
-            # If the flat target has an open valence, it's a ring atom — accept
-            if self._atom_has_open_valence(flat_target):
-                return flat_target
-            # Flat target is a branch atom (no open valence) — try parent chain
-
-        # Step 2: Parent chain fallback for user-written scripts
+        # Primary: walk parent chain N-1 steps (matches canonicalizer's
+        # depth-difference computation)
         target = atom_idx
         for _ in range(ring_size - 1):
             target = self.parents.get(target)
             if target is None:
                 break
+
         if target is not None and 0 <= target < len(self.mol.atoms):
             return target
 
-        # Step 3: Last resort — accept flat target even without open valence
-        # (for canonical output where valence tracking might differ)
+        # Fallback: flat lookback (for edge cases where parent chain
+        # is shorter than ring_size, e.g., deeply nested fused rings
+        # where the ring closure spans multiple branches)
+        flat_target = atom_idx - (ring_size - 1)
         if 0 <= flat_target < len(self.mol.atoms):
             return flat_target
 
