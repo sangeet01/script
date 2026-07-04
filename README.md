@@ -1,15 +1,34 @@
-#
+# SCRIPT (Structural Chemical Representation In Plain Text)
 
-SCRIPT: Structural Chemical Representation In Plain Text
+[![PyPI version](https://badge.fury.io/py/script-chem.svg)](https://badge.fury.io/py/script-chem)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 <p align="center">
   <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" width="100%">
 </p>
 
-
-SCRIPT is a deterministic, RDKit-independent molecular notation system and cheminformatics engine. Built on a Paninian linguistic model — where grammar rules are chemistry rules — SCRIPT gives every molecule, reaction, material, and quantum state exactly one canonical string.
+**SCRIPT** is a deterministic, RDKit-independent molecular notation system and cheminformatics engine. Built on a Paninian linguistic model — where grammar rules are chemistry rules — SCRIPT gives every molecule, reaction, material, and quantum state exactly one canonical string.
 
 Not approximately one. One.
+
+### Quick Start
+
+```bash
+pip install script-chem
+```
+
+```python
+import script
+
+# Encode SMILES to canonical SCRIPT
+script_str = script.smiles_to_script("CC(=O)Oc1ccccc1C(=O)O")
+print(script_str) 
+# Output: C(C(=O)O):C(OC(=O)C):C:C:C:C&6:
+
+# Decode SCRIPT to SMILES
+smiles = script.script_to_smiles("C(C(=O)O):C(OC(=O)C):C:C:C:C&6:")
+```
 
 ---
 

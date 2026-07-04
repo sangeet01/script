@@ -142,9 +142,19 @@ class GenerativeStateMachine:
                                   translation=translation)
                 self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
                 self.mol.atoms[v_idx]._initial_nbrs.append(u_idx)
-                # Dative counts as 1 for valence tracking
-                self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 1
-                self.valence_used[v_idx] = self.valence_used.get(v_idx, 0) + 1
+                # Paribhasa: dative bonds consume valence only on the DONOR.
+                # DATIVE (N->B): u=donor, v=acceptor. Only u's valence used.
+                # REV_DATIVE (B<-N): v=donor. Only v's valence used.
+                # TAUTOMERIC: shared mobile bond, count both atoms.
+                # COORDINATE/STAR: metal centre, no valence increment.
+                if bond_class == 'dative':
+                    self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 1
+                elif bond_class == 'rev_dative':
+                    self.valence_used[v_idx] = self.valence_used.get(v_idx, 0) + 1
+                elif bond_class == 'tautomeric':
+                    self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 1
+                    self.valence_used[v_idx] = self.valence_used.get(v_idx, 0) + 1
+                # coordinate / star: no valence increment (metal centre)
             return True
         
         # Resolve implicit bond (-1)
@@ -206,7 +216,16 @@ class GenerativeStateMachine:
                 total = 0
                 for bond in self.mol.bonds:
                     if bond.begin_atom_idx == atom_idx or bond.end_atom_idx == atom_idx:
-                        total += 1 if bond.bond_type == 4 else bond.bond_type
+                        bt = bond.bond_type
+                        # Special bond types (DATIVE=5 through STAR=9) are handled
+                        # by the special-bond path and must not be counted here.
+                        # Aromatic bonds (bt==4) count as 1 for non-aromatic purposes.
+                        if bt >= 5:
+                            pass  # coordinate / dative / star: 0 covalent contribution
+                        elif bt == 4:
+                            total += 1
+                        else:
+                            total += bt
                 return total
             avail_u = max_u - integer_valence_used(u_idx)
             avail_v = max_v - integer_valence_used(v_idx)

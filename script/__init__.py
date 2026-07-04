@@ -17,19 +17,22 @@ def parse_script(script_string: str):
     parser = SCRIPTParser()
     return parser.parse(script_string)
 
-# RDKit integration (optional)
-try:
-    from .rdkit_bridge import (
-        script_to_smiles, 
-        smiles_to_script, 
-        MolFromSCRIPT, 
-        SCRIPTFromMol,
-        from_rdkit,
-        CoreToRDKit
-    )
-    RDKIT_AVAILABLE = True
-except ImportError:
-    RDKIT_AVAILABLE = False
+# Optional RDKit bridge — only loaded on demand
+def get_rdkit_bridge():
+    """Lazy import of RDKit bridge. Only loads RDKit when called."""
+    try:
+        from .rdkit_bridge import from_rdkit, to_rdkit, script_to_smiles, smiles_to_script
+        return from_rdkit, to_rdkit, script_to_smiles, smiles_to_script
+    except ImportError:
+        raise ImportError("RDKit bridge not available. Install: pip install rdkit")
+
+def get_visualizer():
+    """Lazy import of visualizer. Only loads RDKit when called."""
+    try:
+        from .visualizer import draw_molecule
+        return draw_molecule
+    except ImportError:
+        raise ImportError("Visualizer not available. Install: pip install rdkit")
 
 __version__ = "3.0.0"
 __author__ = "SCRIPT Development Team"

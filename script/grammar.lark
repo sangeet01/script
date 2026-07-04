@@ -121,7 +121,7 @@ WILDCARD: "*"
 //           [O.]         (radical)
 //           [Fe]         (transition metal)
 // =============================================================
-bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? "]"
+bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? state_block? "]"
             | "[" "*" "]"           // Wildcard atom [*] — scaffold attachment, query atom
             | "[" query_atom "]"    // Query atom — SMARTS-style substructure patterns
 
@@ -232,7 +232,7 @@ SINGLE_BOND: "-"
 DOUBLE_BOND: "="
 TRIPLE_BOND: "#"
 AROMATIC_BOND: ":"
-EXPLICIT_MOBILE: "=:"
+EXPLICIT_MOBILE: "~:"
 UP_BOND: "/"
 DOWN_BOND: "\\"
 COORDINATE_BOND: ">"
