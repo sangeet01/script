@@ -1,8 +1,6 @@
 # SCRIPT (Structural Chemical Representation In Plain Text)
 
-[![PyPI version](https://badge.fury.io/py/script-chem.svg)](https://badge.fury.io/py/script-chem)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+SCRIPT: Structural Chemical Representation In Plain Text
 
 <p align="center">
   <img src="docs/assets/script_banner.png" alt="SCRIPT V3 Banner" width="100%">
