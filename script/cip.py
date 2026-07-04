@@ -87,22 +87,33 @@ def _compute_priority_tuple(mol, atom_idx: int, parent_idx: int,
     """
     Recursively compute CIP priority tuple for an atom.
     Aromatic bonds are treated as order 2 (per CIP rules - round up from 1.5).
+
+    All return values have CONSISTENT 3-element structure:
+    (atomic_num, isotope, tuple_of_neighbor_priorities)
+    This ensures correct lexicographic comparison — previously, visited
+    atoms and depth-limited atoms returned 2-element tuples which always
+    sorted lower than 3-element tuples, causing wrong CIP rankings for
+    fused-ring systems where ring closures are common.
     """
     if depth == 0:
-        return (0, 0)
+        return (0, 0, ())  # depth limit — lowest priority, consistent structure
 
     if visited is None:
         visited = set()
 
     if atom_idx == -1:
-        return (1, 0)  # Implicit H
+        return (1, 0, ())  # Implicit H — consistent 3-element structure
 
     atom = mol.atoms[atom_idx]
     atomic_num = atom.atomic_num
     isotope = atom.isotope if atom.isotope else 0
 
     if atom_idx in visited:
-        return (atomic_num, isotope)
+        # Ring closure: return consistent 3-element tuple with no further
+        # neighbors. This atom has already been expanded via this path;
+        # CIP digraph rules say we stop expanding but keep the atom's
+        # (atomic_num, isotope) for comparison.
+        return (atomic_num, isotope, ())
 
     visited = visited | {atom_idx}
 
@@ -123,7 +134,7 @@ def _compute_priority_tuple(mol, atom_idx: int, parent_idx: int,
     # Add implicit H
     if atom.implicit_hs and atom.implicit_hs > 0:
         for _ in range(atom.implicit_hs):
-            neighbors.append((1, 0))
+            neighbors.append((1, 0, ()))
 
     # Sort descending for comparison
     neighbors.sort(reverse=True)

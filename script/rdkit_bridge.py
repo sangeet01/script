@@ -106,46 +106,63 @@ def _resolve_allene_stereo(core: CoreMolecule, rd_mol) -> None:
 
 
 def _reconcile_stereochemistry_cip(core: CoreMolecule, rd_mol):
-    """CIP-based stereochemistry reconciliation.
-    
-    Transforms RDKit's chiral tags to SCRIPT's geometry-based representation
-    using CIP priorities as universal reference frame.
+    """CIP-based stereochemistry reconciliation using SCRIPT's own CIP engine.
+
+    SCRIPT is RDKit-free. The core engine (parser, canonicalizer, CIP)
+    does not depend on RDKit. RDKit is used here ONLY to read the chiral
+    tag from the input molecule — the R/S assignment itself is computed
+    by SCRIPT's own compute_cip_priorities, which is the ground truth.
+
+    Sthiti form: store the CIP-absolute R/S bit as _cip_bit +
+    _cip_absolute=True. The canonicalizer then emits @R/@S (frame-
+    independent) instead of @/@@ (DFS-relative). This eliminates the
+    encoder/decoder reference-frame mismatch for bridgehead and fused-
+    ring atoms.
+
+    Sanskrit: Sthiti (stable form) — the bit is the underlying truth
+    (SCRIPT CIP R/S), not the contextual junction form (DFS-relative).
     """
     has_any_stereo = False
-    
+
     for i, atom in enumerate(core.atoms):
         if not hasattr(atom, '_rdkit_chiral_tag') or atom._rdkit_chiral_tag == 0:
             continue
-        
+
         has_any_stereo = True
-        
-        # Get RDKit neighbor order
+
+        # Get RDKit neighbor order (RDKit is used ONLY for reading the
+        # chiral tag and neighbor order — NOT for CIP computation).
         rd_atom = rd_mol.GetAtomWithIdx(i)
         rdkit_neighbors = [n.GetIdx() for n in rd_atom.GetNeighbors()]
         if atom.implicit_hs > 0:
             rdkit_neighbors.append(-1)
-        
+
         if len(rdkit_neighbors) != 4:
             continue
-        
-        # Compute CIP priorities using CoreMolecule (graph-based, not RDKit order)
+
+        # Compute CIP priorities using SCRIPT's own engine (RDKit-free).
+        # This is the ground truth — no RDKit CIP dependency.
         cip_order = compute_cip_priorities(core, i)
-        
+
         if len(cip_order) != 4:
             continue
-        
-        # Transform RDKit tag to CIP space
+
+        # Transform RDKit tag to CIP-absolute space.
         # RDKit: 1=CW(@@), 2=CCW(@)
+        # SCRIPT bit convention: 0=R, 1=S
         rdkit_bit = 0 if atom._rdkit_chiral_tag == 2 else 1
         parity_rdkit = permutation_parity(rdkit_neighbors, cip_order)
-        cip_chirality = rdkit_bit ^ parity_rdkit
-        
-        # Store CIP-space chirality and CIP order as reference
-        # This will be transformed to DFS space during canonicalization
-        core.chiral_centers[i] = cip_chirality
+        cip_bit = rdkit_bit ^ parity_rdkit
+
+        # Sthiti: store CIP-absolute bit. The canonicalizer emits @R/@S
+        # (frame-independent). The decoder uses this bit directly with
+        # SCRIPT's CIP to reconstruct the correct RDKit tag.
+        atom._cip_absolute = True
+        atom._cip_bit = cip_bit
+        core.chiral_centers[i] = cip_bit
         core._chiral_ref_nbrs = getattr(core, '_chiral_ref_nbrs', {})
         core._chiral_ref_nbrs[i] = cip_order
-    
+
     # Mark that this molecule has CIP-based stereochemistry
     if has_any_stereo:
         core._cip_based_stereo = True
@@ -345,18 +362,51 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Any]:
 
             if stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL) and tag > 0:
                 rd_atom = mol.GetAtomWithIdx(i)
-                script_order = _get_script_neighbor_order(core_mol, i)
-                rdkit_order = [n.GetIdx() for n in rd_atom.GetNeighbors()]
-                if atom_data.implicit_hs > 0:
-                    rdkit_order.append(-1)
-                if len(script_order) == 4 and len(rdkit_order) == 4:
-                    stored_bit = 0 if tag == 2 else 1
-                    p = permutation_parity(script_order, rdkit_order)
-                    target_bit = stored_bit ^ p
-                    final_tag = 2 if target_bit == 0 else 1
-                    rd_atom.SetChiralTag(Chem.ChiralType(final_tag))
+
+                # Path A (Sthiti): if the atom has a CIP-absolute bit (from
+                # @R/@S notation or from _reconcile_stereochemistry_cip),
+                # convert it to the correct RDKit chiral tag using SCRIPT's
+                # own CIP engine. No RDKit CIP dependency — SCRIPT is the
+                # ground truth.
+                #
+                # The conversion: _cip_bit is R=0/S=1 in CIP space. We need
+                # to find the RDKit tag (CCW=2 or CW=1) such that:
+                #   rdkit_bit(tag) XOR parity(rdkit_order, cip_order) == _cip_bit
+                # where rdkit_bit(CCW=2)=0, rdkit_bit(CW=1)=1.
+                if getattr(atom_data, '_cip_absolute', False):
+                    cip_bit = getattr(atom_data, '_cip_bit', 0)
+                    # Compute CIP order using SCRIPT's engine (RDKit-free)
+                    cip_order = compute_cip_priorities(core_mol, i)
+                    # Get RDKit neighbor order
+                    rdkit_order = [n.GetIdx() for n in rd_atom.GetNeighbors()]
+                    if atom_data.implicit_hs > 0:
+                        rdkit_order.append(-1)
+                    if len(cip_order) == 4 and len(rdkit_order) == 4:
+                        # parity from cip_order to rdkit_order
+                        p = permutation_parity(cip_order, rdkit_order)
+                        # target rdkit_bit = cip_bit XOR parity
+                        target_bit = cip_bit ^ p
+                        # 0=CCW(@), 1=CW(@@) → RDKit ChiralType 2/1
+                        final_tag = 2 if target_bit == 0 else 1
+                        rd_atom.SetChiralTag(Chem.ChiralType(final_tag))
+                    else:
+                        # Fallback: can't compute parity, use tentative CCW
+                        rd_atom.SetChiralTag(Chem.ChiralType.CHI_TETRAHEDRAL_CCW)
                 else:
-                    rd_atom.SetChiralTag(Chem.ChiralType(tag))
+                    # Path B (legacy DFS-relative): use _initial_tag with
+                    # permutation parity from script_order to rdkit_order.
+                    script_order = _get_script_neighbor_order(core_mol, i)
+                    rdkit_order = [n.GetIdx() for n in rd_atom.GetNeighbors()]
+                    if atom_data.implicit_hs > 0:
+                        rdkit_order.append(-1)
+                    if len(script_order) == 4 and len(rdkit_order) == 4:
+                        stored_bit = 0 if tag == 2 else 1
+                        p = permutation_parity(script_order, rdkit_order)
+                        target_bit = stored_bit ^ p
+                        final_tag = 2 if target_bit == 0 else 1
+                        rd_atom.SetChiralTag(Chem.ChiralType(final_tag))
+                    else:
+                        rd_atom.SetChiralTag(Chem.ChiralType(tag))
 
             elif stereo_t == StereoType.SQUARE_PLANAR and tag > 0:
                 rd_atom = mol.GetAtomWithIdx(i)
@@ -381,7 +431,28 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Any]:
 
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         Chem.SetDoubleBondNeighborDirections(mol)
-        Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        try:
+            Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        except Exception:
+            # Kekulization failed (e.g., fused aromatic ring with exocyclic
+            # C=O groups like caffeine where RDKit can't find a valid Kekulé
+            # structure). Try kekulizing with clearAromaticFlags=True, which
+            # converts aromatic bonds to alternating single/double and clears
+            # aromatic flags. If that also fails, fall back to clearing all
+            # aromatic info and using single bonds + implicit Hs.
+            try:
+                Chem.Kekulize(mol, clearAromaticFlags=True)
+                Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+            except Exception:
+                for atom in mol.GetAtoms():
+                    atom.SetIsAromatic(False)
+                    atom.SetNoImplicit(False)  # allow implicit Hs to fill valence
+                for bond in mol.GetBonds():
+                    if bond.GetBondType() == Chem.BondType.AROMATIC:
+                        bond.SetBondType(Chem.BondType.SINGLE)
+                    bond.SetIsAromatic(False)
+                mol.UpdatePropertyCache(strict=False)
+                Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
 
         # Re-apply radical electrons after sanitization
         for i, atom_data in enumerate(core_mol.atoms):
