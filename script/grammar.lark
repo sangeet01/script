@@ -172,6 +172,12 @@ isotope: INT
 
 // Complete Stereochemistry Support (Anchored to DFS Vak Order)
 chiral: "@@"        // Tetrahedral S   (must precede "@" for longest match)
+      | "@R"        // Sthiti: CIP-absolute R (frame-independent)
+      | "@S"        // Sthiti: CIP-absolute S (frame-independent)
+      | "@r"        // Yatha-samkhya: pseudoasymmetric r (secondary)
+      | "@s"        // Yatha-samkhya: pseudoasymmetric s (secondary)
+      | "@PL1"      // Sthana: planar chirality variant 1
+      | "@PL2"      // Sthana: planar chirality variant 2
       | "@SP1"      // Square planar — cis
       | "@SP2"      // Square planar — trans
       | "@SP"       // Square planar (unspecified geometry)

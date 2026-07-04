@@ -76,6 +76,40 @@ class GenerativeStateMachine:
             elif chiral == '@@':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.TETRAHEDRAL
+            elif chiral == '@R':
+                # Sthiti (stable form): CIP-absolute R, frame-independent.
+                # Bypasses the Vak→CIP parity transform in the resolver —
+                # the bit is stored directly. This makes canonical forms
+                # idempotent regardless of DFS traversal order.
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TETRAHEDRAL
+                atom._cip_absolute = True
+                atom._cip_bit = 0  # R
+            elif chiral == '@S':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TETRAHEDRAL
+                atom._cip_absolute = True
+                atom._cip_bit = 1  # S
+            elif chiral == '@r':
+                # Yatha-samkhya (corresponding order): pseudoasymmetric r.
+                # Secondary stereocenter — CIP assigns lowercase r/s for
+                # centers with enantiomorphic (not identical) substituents.
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TETRAHEDRAL
+                atom._cip_absolute = True
+                atom._pseudoasymmetric = True
+                atom._cip_bit = 0  # r
+            elif chiral == '@s':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TETRAHEDRAL
+                atom._cip_absolute = True
+                atom._pseudoasymmetric = True
+                atom._cip_bit = 1  # s
+            elif chiral in ('@PL1', '@PL2'):
+                # Sthana (place): planar chirality for metallocenes.
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.PLANAR
+                atom._polyhedral_variant = int(chiral[-1])
             elif chiral in ('@SP1', '@SP2'):
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.SQUARE_PLANAR

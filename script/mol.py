@@ -36,6 +36,7 @@ class StereoType(IntEnum):
     ATROPISOMER      = 4   # @AX  axial chirality (biaryls, allenes)
     TRIG_BIPYRAMIDAL = 5   # @TB
     PYRAMIDAL        = 6   # @PY
+    PLANAR           = 7   # @PL  planar chirality (metallocenes, ferrocenes)
 
 
 ATOMIC_NUM_TO_SYMBOL = {

@@ -7,7 +7,10 @@ Translates monomer codes into CoreMolecule atoms via native SCRIPT parsing.
 from typing import Dict, List, Optional, Tuple, Any
 from lark import Tree, Token
 
-# Amino acid residue SCRIPT notation (native SCRIPT strings)
+# Amino acid residue SCRIPT notation (native SCRIPT V2 strings).
+# Aromatic amino acids (F, W, Y, H and aliases) use V2 `:` aromatic bond
+# notation instead of SMILES lowercase atoms (c1...).  Converted from
+# canonical SMILES via the RDKit bridge + canonicalize_SCRIPT.
 AMINO_ACID_SCRIPT: Dict[str, str] = {
     'A':  'N[C@@H](C)C(=O)O',
     'R':  'N[C@@H](CCCNC(=N)N)C(=O)O',
@@ -17,17 +20,17 @@ AMINO_ACID_SCRIPT: Dict[str, str] = {
     'E':  'N[C@@H](CCC(=O)O)C(=O)O',
     'Q':  'N[C@@H](CCC(=O)N)C(=O)O',
     'G':  'NCC(=O)O',
-    'H':  'N[C@@H](CC1=CNC=N1)C(=O)O',
+    'H':  'N:C:[NH]:C:C&5:C[C@RH](N)C(O)=O',
     'I':  'N[C@@H]([C@@H](C)CC)C(=O)O',
     'L':  'N[C@@H](CC(C)C)C(=O)O',
     'K':  'N[C@@H](CCCCN)C(=O)O',
     'M':  'N[C@@H](CCSC)C(=O)O',
-    'F':  'N[C@@H](Cc1ccccc1)C(=O)O',
+    'F':  'C:C(:C:C:C:C&6:)C[C@RH](C(=O)O)N',
     'P':  'N1[C@@H](CCC1)C(=O)O',
     'S':  'N[C@@H](CO)C(=O)O',
     'T':  'N[C@@H]([C@H](C)O)C(=O)O',
-    'W':  'N[C@@H](Cc1c[nH]c2ccccc12)C(=O)O',
-    'Y':  'N[C@@H](Cc1ccc(O)cc1)C(=O)O',
+    'W':  'C:C:C:C:[C]:C(:C:[NH]:[C]&5:&9:)C[C@RH](C(O)=O)N',
+    'Y':  'O=C([C@RH](CC:C:C:C(:C:C&6:)O)N)O',
     'V':  'N[C@@H](C(C)C)C(=O)O',
     # 3-letter codes (alias)
     'Ala': 'N[C@@H](C)C(=O)O',
@@ -36,27 +39,28 @@ AMINO_ACID_SCRIPT: Dict[str, str] = {
     'Leu': 'N[C@@H](CC(C)C)C(=O)O',
     'Ile': 'N[C@@H]([C@@H](C)CC)C(=O)O',
     'Pro': 'N1[C@@H](CCC1)C(=O)O',
-    'Phe': 'N[C@@H](Cc1ccccc1)C(=O)O',
-    'Trp': 'N[C@@H](Cc1c[nH]c2ccccc12)C(=O)O',
+    'Phe': 'C:C(:C:C:C:C&6:)C[C@RH](C(=O)O)N',
+    'Trp': 'C:C:C:C:[C]:C(:C:[NH]:[C]&5:&9:)C[C@RH](C(O)=O)N',
     'Met': 'N[C@@H](CCSC)C(=O)O',
     'Ser': 'N[C@@H](CO)C(=O)O',
     'Thr': 'N[C@@H]([C@H](C)O)C(=O)O',
     'Cys': 'N[C@@H](CS)C(=O)O',
-    'Tyr': 'N[C@@H](Cc1ccc(O)cc1)C(=O)O',
+    'Tyr': 'O=C([C@RH](CC:C:C:C(:C:C&6:)O)N)O',
     'Asn': 'N[C@@H](CC(=O)N)C(=O)O',
     'Gln': 'N[C@@H](CCC(=O)N)C(=O)O',
     'Asp': 'N[C@@H](CC(=O)O)C(=O)O',
     'Glu': 'N[C@@H](CCC(=O)O)C(=O)O',
     'Lys': 'N[C@@H](CCCCN)C(=O)O',
     'Arg': 'N[C@@H](CCCNC(=N)N)C(=O)O',
-    'His': 'N[C@@H](CC1=CNC=N1)C(=O)O',
+    'His': 'N:C:[NH]:C:C&5:C[C@RH](N)C(O)=O',
 }
 
-# Post-translational modifications (native SCRIPT)
+# Post-translational modifications (native SCRIPT V2).
+# Aromatic PTMs (pY, nitY, Pyl) converted from SMILES via RDKit bridge.
 PTM_SCRIPT: Dict[str, str] = {
     'pS':  'N[C@@H](COP(=O)(O)O)C(=O)O',
     'pT':  'N[C@@H]([C@H](C)OP(=O)(O)O)C(=O)O',
-    'pY':  'N[C@@H](Cc1ccc(OP(=O)(O)O)cc1)C(=O)O',
+    'pY':  'N[C@RH](C(O)=O)CC:C:C:C(:C:C&6:)O[P](=O)(O)O',
     'mK':  'N[C@@H](CCCCNC)C(=O)O',
     'mR':  'N[C@@H](CCCNC(=N)NC)C(=O)O',
     'acK': 'N[C@@H](CCCCNC(=O)C)C(=O)O',
@@ -67,8 +71,8 @@ PTM_SCRIPT: Dict[str, str] = {
     'Orn': 'N[C@@H](CCCN)C(=O)O',
     'Cit': 'N[C@@H](CCCNC(=O)N)C(=O)O',
     'Sec': 'N[C@@H](C[Se])C(=O)O',
-    'Pyl': 'N[C@@H](CCCCNC(=O)C1CC=NC1)C(=O)O',
-    'nitY': 'N[C@@H](Cc1ccc([N+](=O)[O-])cc1)C(=O)O',
+    'Pyl': 'C(CCNC(=O)CCC=NC&5-)C[C@RH](N)C(=O)O',
+    'nitY': 'C([C@RH](N)C(=O)O)C:C:C:C(:C:C&6:)[N+](=O)[O-]',
     'suK': 'N[C@@H](CCCCNS(=O)(=O)O)C(=O)O',
     'Dpr': 'N[C@@H](CN)C(=O)O',
     'Dab': 'N[C@@H](CCN)C(=O)O',
@@ -76,47 +80,57 @@ PTM_SCRIPT: Dict[str, str] = {
     'Gla': 'N[C@@H](CCC(=O)O)C(=O)O',
 }
 
-# Nucleotide base SCRIPT notation (native SCRIPT)
+# Nucleotide base SCRIPT V2 notation.
+# All nucleotide bases have been converted from SMILES (c1... aromatic
+# notation) to native SCRIPT V2 (`:` aromatic bonds, `&N:` ring closures).
+# This ensures {dA}, {rG}, {m5C} etc. parse correctly without SMILES.
 NUCLEOTIDE_SCRIPT: Dict[str, str] = {
-    'A':  'Nc1ncnc2[nH]cnc12',
-    'G':  'Nc1nc2[nH]cnc2c(=O)[nH]1',
-    'C':  'Nc1cc[nH]c(=O)n1',
-    'T':  'Cc1c[nH]c(=O)[nH]c1=O',
-    'U':  'O=C1C=CN([H])C(=O)N1',
-    'I':  'O=c1[nH]cnc2[nH]cnc12',
-    'dA': 'Nc1ncnc2[nH]cnc12',
-    'dG': 'Nc1nc2[nH]cnc2c(=O)[nH]1',
-    'dC': 'Nc1ccn([H])c(=O)n1',
-    'dT': 'Cc1c[nH]c(=O)[nH]c1=O',
-    'rA': 'Nc1ncnc2[nH]cnc12',
-    'rG': 'Nc1nc2[nH]cnc2c(=O)[nH]1',
-    'rC': 'Nc1ccn([H])c(=O)n1',
-    'rU': 'O=C1C=CN([H])C(=O)N1',
+    'A':  'N:C:N:C(:[C]:[C]&6::[NH]:C:N&5:)N',
+    'G':  '[C]:N:C:[NH]:[C]&5::N:C(N):[NH]:[C]=O',
+    'C':  'N:[C](=O):[NH]:C:C:C&7:N',
+    'T':  'C:[NH]:[C](:[NH]:[C](=O):C&7:C)=O',
+    'U':  '[NH]:[C]:[O]:C:C:[NH]:[C]&7:=O',
+    'I':  '[NH]:C:N:[C]:[NH]:C:N:[C]&5::[C]&9:=O',
+    'dA': 'N:C:N:C(:[C]:[C]&6::[NH]:C:N&5:)N',
+    'dG': '[C]:N:C:[NH]:[C]&5::N:C(N):[NH]:[C]=O',
+    'dC': 'N:[C](=O):[NH]:C:C:C&7:N',
+    'dT': 'C:[NH]:[C](:[NH]:[C](=O):C&7:C)=O',
+    'rA': 'N:C:N:C(:[C]:[C]&6::[NH]:C:N&5:)N',
+    'rG': '[C]:N:C:[NH]:[C]&5::N:C(N):[NH]:[C]=O',
+    'rC': 'N:[C](=O):[NH]:C:C:C&7:N',
+    'rU': '[NH]:[C]:[O]:C:C:[NH]:[C]&7:=O',
 }
 
-# Nucleotide modification SCRIPT notation
+# Nucleotide modification SCRIPT V2 notation.
+# All epigenetic modification codes converted from SMILES to V2.
 NUC_MOD_SCRIPT: Dict[str, str] = {
-    'm5C':  'Cc1cn([H])c(=O)nc1N',
-    'm6A':  'CNC1=NC=NC2=C1N=CN2',
-    'hm5C': 'Nc1cc[nH]c(=O)n1',
-    'f5C':  'O=Cc1cn([H])c(=O)nc1N',
-    'ca5C': 'OC(=O)c1cn([H])c(=O)nc1N',
-    'm1A':  'Cn1cnc2c1ncnc2N',
-    'm1G':  'CN1C=NC2=C1N=C(N)NC2=O',
-    'm2G':  'CNC1=NC2=C(N=CN2)C(=O)N1',
-    'm22G': 'CN(C)c1nc2[nH]cnc2c(=O)[nH]1',
-    'm7G':  'CN1CN=C2NC(=O)C(=NC2=N1)N',
-    'psU':  'O=C1NC(=O)CC=N1',
-    's4U':  'O=C1C=CN([H])C(=S)N1',
-    'diU':  'O=C1NC(=O)CCN1',
+    'm5C':  'N:[C](:[NH]:C:C(C):C&7:N)=O',
+    'm6A':  '[C]:[C](:C(:N:C:N&6:)NC):N:C:[NH]&11:',
+    'hm5C': 'N:[C](=O):[NH]:C:C:C&7:N',
+    'f5C':  'C:C(:C(N):N:[C](:[NH]&7:)=O)C=O',
+    'ca5C': 'C(=O)(O)C:C:[NH]:[C](=O):N:C&7:N',
+    'm1A':  'C[N]:[C]:N:C:N:C(:[C]&6::N:C&9:)N',
+    'm1G':  'N:C:[N](C):[C]:[C]&6::[C](=O):[NH]:C(N):N&8:',
+    'm2G':  'C:N:[C]:[C](:N:C(:[NH]:[C]&6:=O)NC):[NH]&12:',
+    'm22G': '[C](:[C]:[C](:N:C(:[NH]&6:)N(C)C):[NH]:C:N&11:)=O',
+    'm7G':  '[NH]:[C]:[C](:N:C(:[C]&6:=O)N)=NN(CN=&11-)C',
+    'psU':  'C(=O)NC(=O)N=CC&8-',
+    's4U':  'C:C:[NH]:[C](:[NH]:[C]&6:=O)=S',
+    'diU':  'NCCC(=O)NC&7-=O',
 }
 
-# Combined lookup: all monomer codes
+# Combined lookup: all monomer codes.
+# Vikarana (expansion) lookup — amino acids take precedence over nucleotides
+# for ambiguous single-letter codes. In standard biochemistry, bare `A` in a
+# peptide context means alanine; `dA`/`rA` (unambiguous) mean adenine.
+# Previously, NUCLEOTIDE_SCRIPT overwrote AMINO_ACID_SCRIPT for 'A', 'G', 'C',
+# etc., causing {A} to expand as adenine (which also used unparseable SMILES
+# aromatic notation). Now AMINO_ACID_SCRIPT is merged last so it wins.
 ALL_MONOMERS: Dict[str, str] = {
-    **AMINO_ACID_SCRIPT,
-    **PTM_SCRIPT,
     **NUCLEOTIDE_SCRIPT,
     **NUC_MOD_SCRIPT,
+    **PTM_SCRIPT,
+    **AMINO_ACID_SCRIPT,  # takes precedence for ambiguous codes (A, G, C, ...)
 }
 
 

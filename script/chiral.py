@@ -89,6 +89,24 @@ class ChiralResolver:
                 atom.chirality = CHI_NONE
                 continue
 
+            # Sthiti form (CIP-absolute): @R/@S/@r/@s markers store the bit
+            # directly, bypassing the Vak→CIP parity transform. This makes
+            # the canonical form idempotent — the stored bit is frame-
+            # independent, so re-parsing with a different DFS order produces
+            # the same bit. The canonicalizer emits @R/@S (not @/@@), so
+            # the bit never goes through a DFS-relative transform again.
+            if getattr(atom, '_cip_absolute', False):
+                bit = getattr(atom, '_cip_bit', 0)
+                atom.chirality = CHI_CW if bit == 1 else CHI_CCW
+                if not hasattr(self.mol, 'chiral_centers'):
+                    self.mol.chiral_centers = {}
+                if not hasattr(self.mol, '_chiral_ref_nbrs'):
+                    self.mol._chiral_ref_nbrs = {}
+                self.mol.chiral_centers[idx] = bit
+                self.mol._chiral_ref_nbrs[idx] = list(getattr(atom, '_initial_nbrs', []))
+                self.mol._cip_based_stereo = True
+                continue
+
             # Atropisomer / allene axial centre: parity is encoded directly
             # in the marker (@AX1 = CW, @AX2 = CCW). No CIP resolution needed
             # because axial stereo doesn't follow the tetrahedral 4-neighbour
@@ -187,6 +205,14 @@ class ChiralResolver:
             self.mol._chiral_ref_nbrs[idx] = cip_sorted
             # Mark that this mol has CIP-based stereochemistry
             self.mol._cip_based_stereo = True
+
+            # Sthiti transform: mark the atom as CIP-absolute so the
+            # canonicalizer emits @R/@S (frame-independent) instead of
+            # @/@@ (DFS-relative). This makes canonical forms idempotent
+            # for ALL chiral molecules, including ring-containing ones
+            # where the DFS order changes between input and canonical form.
+            atom._cip_absolute = True
+            atom._cip_bit = stored_bit
 
     def _get_cip_priority(self, n_idx: int, parent_idx: int, depth: int, visited: set = None) -> tuple:
         """

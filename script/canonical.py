@@ -212,7 +212,9 @@ class SCRIPTCanonicalizer:
         for start_atom in start_candidates:
             canon = self._canonicalize_component_from_root(mol, atom_indices, start_atom, ranks)
             if canon is not None:
-                stripped = _re.sub(r'@@?', '', canon)  # remove @ and @@
+                # Strip ALL chiral markers (@, @@, @R, @S, @r, @s, @SP1, etc.)
+                # so root selection depends only on graph structure, not stereo.
+                stripped = _re.sub(r'@[A-Za-z]*[0-9]*', '', canon)
                 canonical_forms.append((stripped, start_atom, canon))
 
         if not canonical_forms:
@@ -437,7 +439,19 @@ class SCRIPTCanonicalizer:
         # Determine chiral symbol based on stereo_type
         chiral_sym = ""
         if stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL):
-            if len(ordered_neighbors) == 4:
+            # Sthiti form: if the atom has been resolved to CIP-absolute
+            # (either via @R/@S input or via the resolver's Vak→CIP
+            # transform), emit the frame-independent @R/@S marker.
+            # This makes canonical forms idempotent for ALL molecules
+            # including ring-containing ones where DFS order changes.
+            if getattr(atom, '_cip_absolute', False):
+                bit = getattr(atom, '_cip_bit', 0)
+                if getattr(atom, '_pseudoasymmetric', False):
+                    # Yatha-samkhya: lowercase for pseudoasymmetric (r/s)
+                    chiral_sym = "@r" if bit == 0 else "@s"
+                else:
+                    chiral_sym = "@R" if bit == 0 else "@S"
+            elif len(ordered_neighbors) == 4:
                 chiral_sym = get_chiral_symbol(atom_idx, ordered_neighbors, mol, ranks)
         elif stereo_t == StereoType.SQUARE_PLANAR:
             variant = getattr(atom, '_polyhedral_variant', 0)
@@ -454,6 +468,9 @@ class SCRIPTCanonicalizer:
         elif stereo_t == StereoType.PYRAMIDAL:
             variant = getattr(atom, '_polyhedral_variant', 0)
             chiral_sym = f"@PY{variant}" if variant else "@PY"
+        elif stereo_t == StereoType.PLANAR:
+            variant = getattr(atom, '_polyhedral_variant', 0)
+            chiral_sym = f"@PL{variant}" if variant else "@PL"
 
         if (symbol in ORGANIC_SUBSET
                 and atom.formal_charge == 0
