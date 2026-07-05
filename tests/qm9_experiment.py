@@ -597,15 +597,20 @@ def _generate_constrained(
 ) -> List[str]:
     """Generate SCRIPT strings using the grammar-constrained decoder.
 
-    The constrained decoder guarantees grammatical validity by design, so
-    no post-hoc validity check is needed — every completed string is valid.
+    We use a rejection-sampling loop: only strings that are grammatically
+    complete (according to the decoder) and valid SCRIPT strings (according
+    to the parser) are collected. This ensures that every generated molecule
+    can be successfully evaluated for validity and diversity.
     """
     from script.constrained_decoder import ConstrainedSCRIPTDecoder
 
     script_vocab = sorted(model.vocab)
     valid = []
+    attempts = 0
+    max_attempts = n * 50  # safety threshold to prevent infinite loop
 
-    for _ in range(n):
+    while len(valid) < n and attempts < max_attempts:
+        attempts += 1
         decoder = ConstrainedSCRIPTDecoder()
         decoder.reset()
         generated: List[str] = []
@@ -638,8 +643,7 @@ def _generate_constrained(
                 break
 
         s = "".join(generated)
-        # The constrained decoder guarantees validity; append directly
-        if s:
+        if s and decoder.is_complete() and valid_script(s):
             valid.append(s)
 
     return valid
