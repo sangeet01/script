@@ -13,7 +13,7 @@ Not approximately one. One.
 ### Quick Start
 
 ```bash
-pip install script-chem
+pip install linearscript
 ```
 
 ```python
@@ -443,8 +443,8 @@ To prove that topological back-counting scales to real complexity:
 ## Citation
 
 ```
-Sharma, S. (2026). SCRIPT: Structural Chemical Representation in Plain Text.
-A Deterministic Molecular Notation System with Materials & State Expansion (V3).
+SCRIPT: Structural Chemical Representation In Plain Text. 
+Sharma, S. (2026). 
 https://github.com/sangeet01/script
 ```
 
