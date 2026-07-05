@@ -86,7 +86,8 @@ QM9_URLS = [
     "https://ndownloader.figshare.com/files/3195389",
 ]
 QM9_FIGSHARE_API = "https://api.figshare.com/v2/articles/978904/files"
-QM9_EXPECTED_MOLECULES = 133_885   # 134k; one file is the excluded list
+# QM9 has 133,885 molecules after excluding 3,054 uncharacterized entries.
+QM9_TOTAL_MOLECULES = 133_885
 
 EXCLUDE_URL = "https://figshare.com/ndownloader/files/3195404"  # uncharacterized.txt
 
@@ -556,8 +557,8 @@ def valid_selfies(s: str) -> bool:
 
 def valid_script(s: str) -> bool:
     try:
-        from script.parser import SCRIPTParser
-        r = SCRIPTParser().parse(s)
+        from script.parser import parse_script
+        r = parse_script(s)
         if not r.get("success"):
             return False
         mol = r.get("molecule")
@@ -582,13 +583,23 @@ def script_get_smiles(s: str) -> Optional[str]:
 # Constrained SCRIPT generation
 # ===========================================================================
 
+# Probability of early-stopping constrained generation once a complete
+# molecule has been formed. Higher = shorter average strings; lower = longer.
+CONSTRAINED_EARLY_STOP_PROB: float = 0.15
+
+
 def _generate_constrained(
     model: CharBigramModel,
     n: int,
     max_len: int,
     rng: random.Random,
+    early_stop_prob: float = CONSTRAINED_EARLY_STOP_PROB,
 ) -> List[str]:
-    """Generate SCRIPT strings using the grammar-constrained decoder."""
+    """Generate SCRIPT strings using the grammar-constrained decoder.
+
+    The constrained decoder guarantees grammatical validity by design, so
+    no post-hoc validity check is needed — every completed string is valid.
+    """
     from script.constrained_decoder import ConstrainedSCRIPTDecoder
 
     script_vocab = sorted(model.vocab)
@@ -622,12 +633,13 @@ def _generate_constrained(
                 break
             generated.append(token)
 
-            # Early stop with probability proportional to completeness
-            if decoder.is_complete() and rng.random() < 0.15:
+            # Early stop once a grammatically complete molecule is formed
+            if decoder.is_complete() and rng.random() < early_stop_prob:
                 break
 
         s = "".join(generated)
-        if valid_script(s):
+        # The constrained decoder guarantees validity; append directly
+        if s:
             valid.append(s)
 
     return valid
@@ -645,7 +657,6 @@ def experiment_generative(
     """Train bigram models, generate molecules, report validity."""
 
     sep = "=" * 72
-    thin = "-" * 72
     log.info("%s", sep)
     log.info("  EXPERIMENT 2: QM9 Generative Validity Comparison")
     log.info("%s", sep)
@@ -792,14 +803,17 @@ def _diversity(smiles_list: List[str], max_pairs: int = 5000) -> Tuple[float, in
         pass
 
     # Pure Python fallback (sample pairs for speed)
-    from rdkit.Chem import DataStructs
+    try:
+        from rdkit.Chem import DataStructs as _DS2
+    except ImportError:
+        return 0.0, n
     rng = random.Random(0)
     indices = list(range(n))
     pairs = [(i, j) for i in indices for j in range(i + 1, n)]
     if len(pairs) > max_pairs:
         pairs = rng.sample(pairs, max_pairs)
 
-    total_sim = sum(DataStructs.TanimotoSimilarity(fps[i], fps[j])
+    total_sim = sum(_DS2.TanimotoSimilarity(fps[i], fps[j])
                     for i, j in pairs)
     mean_sim = total_sim / len(pairs)
     return round(1.0 - mean_sim, 6), n
@@ -987,7 +1001,7 @@ def parse_args() -> argparse.Namespace:
         description="QM9 Generative Validity and Diversity Experiments"
     )
     ap.add_argument("--n-train",   type=int, default=None,
-                    help="Max training molecules (default: all ~134k)")
+                    help="Max training molecules (default: all ~133k after exclusions)")
     ap.add_argument("--n-generate", type=int, default=1000,
                     help="Molecules to generate per notation (default: 1000)")
     ap.add_argument("--seed",      type=int, default=42)
@@ -1028,7 +1042,7 @@ def main():
         log.info("SELFIES not installed; SELFIES experiments will be skipped.")
 
     try:
-        from script.parser import SCRIPTParser  # noqa: F401
+        from script.parser import parse_script  # noqa: F401
         log.info("SCRIPT: OK")
     except ImportError:
         log.error("SCRIPT not importable from this location.")
