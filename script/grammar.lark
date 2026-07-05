@@ -233,8 +233,17 @@ bond: DATIVE             // Dative:         ->
     | COORDINATE_BOND    // Coordinate:      >
     | hbond              // Haptic: *INT  or bare * (resonance)
 
-// hbond: bare STAR_BOND = resonant bond; STAR_BOND INT = haptic eta-n bond
-hbond: STAR_BOND INT?
+// hbond: STAR_BOND INT = haptic eta-n bond (explicit hapticity number required).
+// NOTE (fix): previously `hbond: STAR_BOND INT?` also allowed a bare STAR_BOND
+// with no following INT. Because STAR_BOND and WILDCARD both lex the literal
+// "*", a bare "*" was simultaneously a valid reduction as `hbond` (bare
+// resonant bond) and as `atom_expr` (wildcard atom) at the same grammar
+// position, causing the lexer to silently and unconditionally prefer
+// STAR_BOND — so a standalone wildcard atom `*` could never parse, even
+// though atom_expr explicitly allows WILDCARD. Requiring the hapticity INT
+// removes the ambiguous bare-STAR_BOND production; haptic bonds without an
+// explicit eta-n number had no well-defined chemical meaning regardless.
+hbond: STAR_BOND INT
 
 DATIVE: "->"
 REV_DATIVE: "<-"

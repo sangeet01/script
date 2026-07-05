@@ -92,39 +92,61 @@ class MockModel:
 
 
 def demo():
-    """Demonstrate constrained generation with 100% validity."""
-    
+    """Demonstrate constrained generation vs unconstrained generation.
+
+    IMPORTANT: 'valid' here means grammar-valid and Sandhi-valid (correct
+    valence, correctly closed brackets/rings) — the same notion of validity
+    SELFIES uses. It does NOT mean 'chemically sensible' or 'drug-like'.
+    A random, untrained model will still produce syntactically legal but
+    chemically nonsensical strings (e.g. long runs of repeated atoms via
+    the multiplier syntax). The constrained decoder's job is to guarantee
+    every individual token is grammar-admissible at the point it is chosen
+    and that valence/bracket/ring state never becomes inconsistent — it
+    does not and cannot guarantee the output looks like a real drug
+    molecule when the underlying model is untrained.
+    """
+
     # Vocabulary (simplified — real vocab would be larger)
     vocab = list("CNOSPFClBrIBH()*-=#:.&123456789[]") + \
             ['->', '<-', '@@', '@R', '@S', '<EOS>']
-    
-    model = MockModel(len(vocab), seed=42)
-    
+
+    n_trials = 200  # large enough for a statistically meaningful rate
+
     print("=== Constrained SCRIPT Generation Demo ===\n")
-    print("Generating 10 molecules with random model (constrained):\n")
-    
+    print(f"Generating {n_trials} strings with an UNTRAINED random-logit model")
+    print("(constrained decoding, temperature sampling):\n")
+
+    from script.parser import SCRIPTParser
+    parser = SCRIPTParser()
+
+    model = MockModel(len(vocab), seed=42)
+
     valid_count = 0
-    for i in range(10):
+    incomplete_count = 0   # hit max_length without decoder.is_complete()
+    shown = 0
+    for i in range(n_trials):
         np.random.seed(i)  # different molecule each time
         result = constrained_generate(model, vocab, max_length=20, temperature=1.0)
-        
-        # Verify validity with actual SCRIPT parser
-        from script.parser import SCRIPTParser
-        parser = SCRIPTParser()
+
         parse_result = parser.parse(result)
         is_valid = parse_result["success"]
-        
+
         if is_valid:
             valid_count += 1
-        
-        print(f"  {i+1}. {result:30s}  {'VALID' if is_valid else 'INVALID'}")
-    
-    print(f"\nValidity rate: {valid_count}/10 = {valid_count*10}%")
-    print("\n=== Contrast: unconstrained generation ===\n")
-    
-    # Unconstrained (no masking)
+
+        if shown < 10:  # only print the first 10 for readability
+            print(f"  {i+1}. {result:30s}  {'VALID' if is_valid else 'INVALID'}")
+            shown += 1
+
+    validity_rate = 100 * valid_count / n_trials
+    print(f"\nConstrained validity (grammar+Sandhi): "
+          f"{valid_count}/{n_trials} = {validity_rate:.1f}%")
+
+    print("\n=== Contrast: unconstrained generation (no masking) ===\n")
+
     valid_count_unconstrained = 0
-    for i in range(10):
+    shown = 0
+    for i in range(n_trials):
         np.random.seed(i)
         generated = []
         model2 = MockModel(len(vocab), seed=i)
@@ -136,15 +158,26 @@ def demo():
                 break
             generated.append(next_token)
         result = ''.join(generated)
-        
-        parser = SCRIPTParser()
+
         is_valid = parser.parse(result)["success"]
         if is_valid:
             valid_count_unconstrained += 1
-        print(f"  {i+1}. {result:30s}  {'VALID' if is_valid else 'INVALID'}")
-    
-    print(f"\nUnconstrained validity: {valid_count_unconstrained}/10 = {valid_count_unconstrained*10}%")
-    print(f"Constrained validity:   10/10 = 100%")
+
+        if shown < 10:
+            print(f"  {i+1}. {result:30s}  {'VALID' if is_valid else 'INVALID'}")
+            shown += 1
+
+    unconstrained_rate = 100 * valid_count_unconstrained / n_trials
+    print(f"\nUnconstrained validity: "
+          f"{valid_count_unconstrained}/{n_trials} = {unconstrained_rate:.1f}%")
+    print(f"Constrained validity:   {valid_count}/{n_trials} = {validity_rate:.1f}%")
+    print(f"\nNote: both models are UNTRAINED (random logits). This demo measures")
+    print(f"the decoder's grammar/Sandhi enforcement mechanism in isolation, not")
+    print(f"end-to-end generation quality. A trained model under the same")
+    print(f"constrained decoder would be expected to approach 100% validity,")
+    print(f"since the decoder makes every individual token choice grammar-legal;")
+    print(f"remaining failures here are premature termination (max_length reached")
+    print(f"before decoder.is_complete()), not grammar violations.")
 
 
 if __name__ == "__main__":

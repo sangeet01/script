@@ -63,7 +63,24 @@ class GrammarState:
     # Bracket state: True if inside [...]
     in_bracket: bool = False
     bracket_content: str = ""  # accumulated content inside [...]
-    
+
+    # V3.9 fix: explicit stage tracker for bracket_atom grammar fields.
+    # bracket_atom: [ isotope? element chiral? hcount? charge? radical? ]
+    # Each field may appear AT MOST ONCE, in this strict linear order.
+    # The old heuristic-based mask (content.isdigit(), any(c.isalpha()))
+    # could not distinguish "digit is part of isotope" from "digit is part
+    # of hcount" from "digit is part of charge magnitude", and had no way
+    # to prevent a field from being placed twice — allowing malformed
+    # bracket atoms like [29O5], [OH4H2143@R@@5211], [S9484@S@S.] to be
+    # declared decoder-complete even though the real grammar rejects them.
+    # bracket_stage tracks which field we are currently allowed to start
+    # or continue: 'isotope' -> 'element' -> 'chiral' -> 'hcount' ->
+    # 'charge' -> 'radical' -> 'close'. Once a field is finished (a
+    # different-kind token is consumed), we advance the stage and can
+    # never return to an earlier one.
+    bracket_stage: str = 'isotope'
+    bracket_has_element: bool = False
+
     # Ring registers: digit -> atom_index (for SMILES-style 1...1 closures)
     ring_registers: Dict[str, int] = field(default_factory=dict)
     
@@ -208,6 +225,17 @@ class ConstrainedSCRIPTDecoder:
         for idx, atom_info in s.atoms.items():
             if atom_info['valence_used'] > atom_info['max_valence']:
                 return False
+        # V3.9: a bare (non-bracket) wildcard as the CURRENT/last atom is
+        # not a valid complete molecule. atom_expr's WILDCARD and hbond's
+        # STAR_BOND share the same "*" lexeme and are grammatically
+        # ambiguous with 1-token lookahead; the grammar currently resolves
+        # a leading/standalone "*" as the start of an hbond (which then
+        # requires a following INT and atom), not as a terminal wildcard
+        # atom. [*] (bracketed) is unaffected and works correctly.
+        if s.current_atom is not None:
+            cur = s.atoms.get(s.current_atom)
+            if cur and cur.get('is_bare_wildcard'):
+                return False
         return True
     
     # -------------------------------------------------------------------------
@@ -225,8 +253,12 @@ class ConstrainedSCRIPTDecoder:
         valid.add('{')
         # Macroscopic context
         valid.add('[[')
-        # Wildcard
-        valid.add('*')
+        # V3.9: bare (non-bracket) WILDCARD is NOT offered as a first token.
+        # atom_expr's WILDCARD and hbond's STAR_BOND share the "*" lexeme;
+        # the real grammar's LALR parser always resolves a leading "*" as
+        # STAR_BOND (the start of an hbond), which is invalid without a
+        # preceding atom. Use "[*]" (bracketed wildcard) instead, which is
+        # unambiguous and fully supported.
         return valid
     
     def _valid_subsequent_tokens(self) -> Set[str]:
@@ -252,7 +284,13 @@ class ConstrainedSCRIPTDecoder:
         # Branch tokens
         if not waiting_for_atom and not s.in_bracket:
             valid.add('(')
-        if s.branch_depth > 0:
+        # V3.9 fix: ')' must never be offered while waiting_for_atom is True.
+        # Previously gated only by branch_depth > 0, this allowed sequences
+        # like "S(1N.[P.]-)" where the bond token '-' set next_bond_order=1
+        # (an atom is owed) and then ')' closed the branch anyway, leaving
+        # next_bond_order stuck at 1 forever with no atom-token path to
+        # resolve it (a genuine mask dead-end — all_masked / NaN probs).
+        if s.branch_depth > 0 and not waiting_for_atom:
             valid.add(')')
         
         # Ring closure tokens — only if we have a current atom
@@ -275,56 +313,92 @@ class ConstrainedSCRIPTDecoder:
         return valid
     
     def _valid_bracket_tokens(self) -> Set[str]:
-        """Valid tokens inside a [...] bracket atom."""
+        """Valid tokens inside a [...] bracket atom.
+
+        V3.9 fix: bracket_atom grammar is
+            [ isotope? element chiral? hcount? charge? radical? ]
+        Each field appears AT MOST ONCE, in this strict linear order.
+        We track bracket_stage explicitly rather than re-deriving field
+        membership from loose string heuristics on bracket_content, which
+        previously allowed repeated/out-of-order fields (e.g. two chiral
+        markers, digits attributable to no specific field) to be masked
+        as valid.
+        """
         valid = set()
         s = self.state
-        content = s.bracket_content
-        
-        # Element symbols (2-letter first, then 1-letter)
-        if not content or content.isdigit():
-            # Isotope or start: allow elements
-            valid.update({'C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'B', 'H',
-                         'Fe', 'Cu', 'Zn', 'Au', 'Ag', 'Pt', 'Pd', 'Ni', 'Co',
-                         'Mn', 'Cr', 'Mo', 'W', 'V', 'Ti', 'Zr', 'Hf', 'Ru', 'Rh',
-                         'Os', 'Ir', 'Re', 'Ba', 'Ca', 'Na', 'K', 'Mg', 'Al', 'Si',
-                         'Li', 'Be', 'Ga', 'Ge', 'As', 'Se', 'Rb', 'Sr', 'Y', 'Nb',
-                         'Tc', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'Xe', 'Cs', 'La', 'Ce',
-                         'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er',
-                         'Tm', 'Yb', 'Lu', 'Ta', 'Hg', 'Tl', 'Pb', 'Bi', 'Po', 'At',
-                         'Rn', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm'})
-        
-        # Isotope (digits before element)
-        if not content or content.isdigit():
+        stage = s.bracket_stage
+
+        elements = {'C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'B', 'H',
+                     'Fe', 'Cu', 'Zn', 'Au', 'Ag', 'Pt', 'Pd', 'Ni', 'Co',
+                     'Mn', 'Cr', 'Mo', 'W', 'V', 'Ti', 'Zr', 'Hf', 'Ru', 'Rh',
+                     'Os', 'Ir', 'Re', 'Ba', 'Ca', 'Na', 'K', 'Mg', 'Al', 'Si',
+                     'Li', 'Be', 'Ga', 'Ge', 'As', 'Se', 'Rb', 'Sr', 'Y', 'Nb',
+                     'Tc', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'Xe', 'Cs', 'La', 'Ce',
+                     'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er',
+                     'Tm', 'Yb', 'Lu', 'Ta', 'Hg', 'Tl', 'Pb', 'Bi', 'Po', 'At',
+                     'Rn', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm'}
+        chiral_markers = {'@', '@@', '@R', '@S', '@r', '@s', '@AX', '@AX1', '@AX2',
+                     '@SP', '@SP1', '@SP2', '@OH', '@OH1', '@OH2', '@OH3',
+                     '@OH4', '@OH5', '@TB', '@TB1', '@TB2', '@PY', '@PY1',
+                     '@PY2', '@PL', '@PL1', '@PL2'}
+
+        if stage == 'isotope':
+            # Isotope digits are optional; either start the isotope number
+            # or skip straight to the element.
             valid.update(set('0123456789'))
-        
-        # Chiral markers (after element)
-        if content and not content.isdigit():
-            # Check if we have an element already
-            has_element = any(c.isalpha() for c in content)
-            if has_element:
-                valid.update({'@', '@@', '@R', '@S', '@r', '@s', '@AX', '@AX1', '@AX2',
-                             '@SP', '@SP1', '@SP2', '@OH', '@OH1', '@OH2', '@OH3',
-                             '@OH4', '@OH5', '@TB', '@TB1', '@TB2', '@PY', '@PY1',
-                             '@PY2', '@PL', '@PL1', '@PL2'})
-        
-        # Hydrogen count (after element/chiral)
-        if content and any(c.isalpha() for c in content):
+            valid.update(elements)
+
+        elif stage == 'isotope_continue':
+            # Mid-isotope-number: continue digits, or the element follows.
+            valid.update(set('0123456789'))
+            valid.update(elements)
+
+        elif stage == 'element':
+            # Element is mandatory and not yet placed.
+            valid.update(elements)
+
+        elif stage == 'chiral':
+            # Chiral marker optional; can skip straight to hcount/charge/
+            # radical/close.
+            valid.update(chiral_markers)
             valid.add('H')
-            valid.update(set('0123456789'))  # H count digits
-        
-        # Charge
-        if content and any(c.isalpha() for c in content):
-            valid.update({'+', '-', '++', '--'})
-            valid.update(set('0123456789'))  # charge magnitude
-        
-        # Radical
-        if content and any(c.isalpha() for c in content):
+            valid.update({'+', '-'})
             valid.add('.')
-        
-        # Close bracket
-        if content and any(c.isalpha() for c in content):
             valid.add(']')
-        
+
+        elif stage == 'hcount':
+            # H optional; if present, exactly one digit run may follow.
+            valid.add('H')
+            valid.update({'+', '-'})
+            valid.add('.')
+            valid.add(']')
+
+        elif stage == 'hcount_digit':
+            # Continue the H-count number, or move on.
+            valid.update(set('0123456789'))
+            valid.update({'+', '-'})
+            valid.add('.')
+            valid.add(']')
+
+        elif stage == 'charge':
+            # Charge optional; +/- starts it.
+            valid.update({'+', '-'})
+            valid.add('.')
+            valid.add(']')
+
+        elif stage == 'charge_digit':
+            # Continue charge magnitude digits, or move on.
+            valid.update(set('0123456789'))
+            valid.add('.')
+            valid.add(']')
+
+        elif stage == 'radical':
+            valid.add('.')
+            valid.add(']')
+
+        elif stage == 'close':
+            valid.add(']')
+
         return valid
     
     def _filter_by_valence(self, tokens: Set[str]) -> Set[str]:
@@ -367,6 +441,7 @@ class ConstrainedSCRIPTDecoder:
         if token == '[':
             s.in_bracket = True
             s.bracket_content = ""
+            s.bracket_stage = 'isotope'
             return
         
         if token == '(':
@@ -408,15 +483,88 @@ class ConstrainedSCRIPTDecoder:
             return
     
     def _apply_bracket_token(self, token: str):
-        """Handle tokens inside [...] brackets."""
+        """Handle tokens inside [...] brackets, advancing bracket_stage
+        to enforce the strict field order of the bracket_atom grammar:
+        isotope? element chiral? hcount? charge? radical?
+        """
         s = self.state
+
+        elements = {'C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'B', 'H',
+                     'Fe', 'Cu', 'Zn', 'Au', 'Ag', 'Pt', 'Pd', 'Ni', 'Co',
+                     'Mn', 'Cr', 'Mo', 'W', 'V', 'Ti', 'Zr', 'Hf', 'Ru', 'Rh',
+                     'Os', 'Ir', 'Re', 'Ba', 'Ca', 'Na', 'K', 'Mg', 'Al', 'Si',
+                     'Li', 'Be', 'Ga', 'Ge', 'As', 'Se', 'Rb', 'Sr', 'Y', 'Nb',
+                     'Tc', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'Xe', 'Cs', 'La', 'Ce',
+                     'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er',
+                     'Tm', 'Yb', 'Lu', 'Ta', 'Hg', 'Tl', 'Pb', 'Bi', 'Po', 'At',
+                     'Rn', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm'}
+        chiral_markers = {'@', '@@', '@R', '@S', '@r', '@s', '@AX', '@AX1', '@AX2',
+                     '@SP', '@SP1', '@SP2', '@OH', '@OH1', '@OH2', '@OH3',
+                     '@OH4', '@OH5', '@TB', '@TB1', '@TB2', '@PY', '@PY1',
+                     '@PY2', '@PL', '@PL1', '@PL2'}
+
         if token == ']':
-            # Parse bracket content and add atom
             self._parse_bracket_atom(s.bracket_content)
             s.in_bracket = False
             s.bracket_content = ""
-        else:
-            s.bracket_content += token
+            s.bracket_stage = 'isotope'
+            return
+
+        s.bracket_content += token
+
+        stage = s.bracket_stage
+        if stage in ('isotope', 'isotope_continue'):
+            if token in elements:
+                s.bracket_stage = 'chiral'
+            elif token.isdigit():
+                s.bracket_stage = 'isotope_continue'
+            # else stays put (shouldn't happen if mask is correct)
+
+        elif stage == 'element':
+            if token in elements:
+                s.bracket_stage = 'chiral'
+
+        elif stage == 'chiral':
+            if token in chiral_markers:
+                s.bracket_stage = 'hcount'
+            elif token == 'H':
+                s.bracket_stage = 'hcount_digit'
+            elif token in ('+', '-'):
+                s.bracket_stage = 'charge_digit'
+            elif token == '.':
+                s.bracket_stage = 'close'
+
+        elif stage == 'hcount':
+            if token == 'H':
+                s.bracket_stage = 'hcount_digit'
+            elif token in ('+', '-'):
+                s.bracket_stage = 'charge_digit'
+            elif token == '.':
+                s.bracket_stage = 'close'
+
+        elif stage == 'hcount_digit':
+            if token.isdigit():
+                s.bracket_stage = 'charge'  # one digit run only, move on
+            elif token in ('+', '-'):
+                s.bracket_stage = 'charge_digit'
+            elif token == '.':
+                s.bracket_stage = 'close'
+
+        elif stage == 'charge':
+            if token in ('+', '-'):
+                s.bracket_stage = 'charge_digit'
+            elif token == '.':
+                s.bracket_stage = 'close'
+
+        elif stage == 'charge_digit':
+            if token.isdigit():
+                s.bracket_stage = 'radical'  # one digit run only, move on
+            elif token == '.':
+                s.bracket_stage = 'close'
+
+        elif stage == 'radical':
+            if token == '.':
+                s.bracket_stage = 'close'
     
     def _add_atom(self, symbol: str):
         """Add a new atom to the state."""
@@ -441,6 +589,12 @@ class ConstrainedSCRIPTDecoder:
             'valence_used': valence_used,
             'max_valence': max_val,
             'implicit_hs': 0,
+            # V3.9: a bare (non-bracket) WILDCARD atom is not a valid
+            # complete molecule per the real grammar — see is_complete().
+            # This is due to a genuine grammar-level ambiguity between
+            # atom_expr's bare WILDCARD and hbond's STAR_BOND sharing the
+            # same lexeme; unresolved without a deeper grammar change.
+            'is_bare_wildcard': (symbol == '*'),
         }
         s.current_atom = atom_idx
         s.started = True
