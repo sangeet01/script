@@ -53,7 +53,7 @@ VBAR: "|"
 // Reactions are one or more scripts separated by ">>" or "=>"
 // =============================================================
 reaction: script (reaction_arrow script)+
-reaction_arrow: ">>" | "=>" | "<=>"
+reaction_arrow: ">>" | "=>"
 
 
 // =============================================================
@@ -374,7 +374,7 @@ polymer_unit: molecular_chain | peptide_chain
 polymer_block: polymer polymer_junction polymer (polymer_junction polymer)*
 
 // Suffix: repeat count or block junction (for inline multi-block inside a single polymer)
-polymer_suffix: polymer_multiplier (polymer_junction polymer_multiplier)*
+polymer_suffix: polymer_multiplier
               | repeat_spec
 
 polymer_multiplier: "<n:" INT ">"
@@ -385,18 +385,10 @@ polymer_multiplier: "<n:" INT ">"
 // -alt- alternating  (alias: -a-)
 // -ran- random       (alias: -r-, -stat-)
 // -g-   graft
-polymer_junction: JUNCTION_B
-                | JUNCTION_ALT | JUNCTION_ALT_A
-                | JUNCTION_RAN | JUNCTION_RAN_R | JUNCTION_STAT
-                | JUNCTION_G
-
-JUNCTION_B: "-b-"
-JUNCTION_ALT: "-alt-"
-JUNCTION_ALT_A: "-a-"
-JUNCTION_RAN: "-ran-"
-JUNCTION_RAN_R: "-r-"
-JUNCTION_STAT: "-stat-"
-JUNCTION_G: "-g-"
+polymer_junction: "-b-"
+                | "-alt-" | "-a-"
+                | "-ran-" | "-r-" | "-stat-"
+                | "-g-"
 
 // Repeat spec for simple polymers: {[unit]}n, {[unit]}50, {[unit]}0_7
 repeat_spec: "n"
@@ -434,8 +426,7 @@ signed_int: "-" INT  -> neg_int
           | INT      -> pos_int
 
 // Lattice parameters: a, b, c in Angstroms; alpha, beta, gamma in degrees
-lattice_params: lattice_val "," lattice_val "," lattice_val "," lattice_val "," lattice_val "," lattice_val
-lattice_val: FLOAT | INT
+lattice_params: FLOAT "," FLOAT "," FLOAT "," FLOAT "," FLOAT "," FLOAT
 DIGIT: "0".."9"
 LETTER: "A".."Z"
 

@@ -128,16 +128,27 @@ class PolymerBlock:
     stores a list of PolymerBlock objects in its polymer_blocks attribute.
     Each block has:
       - unit:         the CoreMolecule for the repeat unit of this block
+                       (kept for informational purposes; may be None when
+                       the block was expanded directly into the shared
+                       parent graph — see atom_start/atom_end below)
       - repeat_count: int, (min,max) tuple, or 'n' (symbolic)
       - block_kind:   junction token from the grammar
                       ('diblock', 'alternating', 'random', 'graft', or '')
+      - atom_start:   index of this block's first atom in the PARENT
+                      molecule's shared atom list (V3.7 full expansion)
+      - atom_end:     index of this block's last atom (inclusive) in the
+                      parent molecule's shared atom list
     """
-    def __init__(self, unit: 'CoreMolecule',
+    def __init__(self, unit: Optional['CoreMolecule'],
                  repeat_count: Any = None,
-                 block_kind: str = ''):
-        self.unit: 'CoreMolecule' = unit
+                 block_kind: str = '',
+                 atom_start: Optional[int] = None,
+                 atom_end: Optional[int] = None):
+        self.unit: Optional['CoreMolecule'] = unit
         self.repeat_count: Any = repeat_count
         self.block_kind: str = block_kind
+        self.atom_start: Optional[int] = atom_start
+        self.atom_end: Optional[int] = atom_end
 
     def __repr__(self) -> str:
         return ("PolymerBlock(kind=" + repr(self.block_kind) +

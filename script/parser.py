@@ -227,48 +227,86 @@ class SCRIPTInterpreter(Interpreter):
         The grammar rule is:
             polymer_block: polymer polymer_junction polymer (polymer_junction polymer)*
 
-        Each polymer child is parsed as its own unit; junction tokens are extracted
-        to set block_kind on each resulting PolymerBlock object.
+        V3.7 fix: each 'polymer' child is visited via self.visit(child),
+        which auto-dispatches to the polymer() method below. That method
+        visits polymer_unit DIRECTLY into the shared self.state (not an
+        isolated sub-state), so atoms across blocks share one contiguous
+        index space in the same CoreMolecule. The junction bond between
+        blocks needs no special-case code: as long as
+        self.state.current_atom_idx is left pointing at the previous
+        block's last atom when the next block's first atom_expr is
+        visited, the existing add_atom/add_bond implicit-bond resolution
+        (bond_order=-1 -> SINGLE, unless both atoms are aromatic) creates
+        the junction bond automatically.
+
+        (The previous version of this method built PolymerBlock metadata
+        from a throwaway isolated GenerativeStateMachine per block — those
+        objects never contributed atoms to the real graph; the actual
+        merged graph came only from an unconditional visit_children(tree)
+        call at the end. That worked by accident for connectivity but left
+        block_kind and atom_start/atom_end unpopulated, since
+        polymer_junction arrives here as a Tree node, not a bare Token.
+        This version tracks atom ranges and junction kind correctly around
+        the same working shared-state mechanism, and drops the redundant
+        isolated-state loop entirely.)
+
+        polymer_junction: "-b-" | "-alt-" | "-a-" | "-ran-" | "-stat-" | "-g-"
         """
         from lark import Tree as LTree, Token as LToken
         from .mol import PolymerBlock
-        from .state_machine import GenerativeStateMachine
 
         _KIND_MAP = {
-            '-b-': 'diblock',
-            '-a-': 'alternating', '-alt-': 'alternating',
-            '-r-': 'random', '-ran-': 'random', '-stat-': 'random',
-            '-g-': 'graft',
+            'b': 'diblock', 'diblock': 'diblock',
+            'alt': 'alternating', 'a': 'alternating', 'alternating': 'alternating',
+            'ran': 'random', 'r': 'random', 'stat': 'random', 'random': 'random',
+            'g': 'graft', 'graft': 'graft',
         }
 
-        current_kind = ''
+        parent_mol = self.state.mol
+        pending_kind = ''
+
         for child in tree.children:
-            if isinstance(child, LToken):
-                current_kind = _KIND_MAP.get(str(child), str(child).strip('-'))
-                continue
             if not isinstance(child, LTree):
                 continue
             node_data = child.data.lstrip('!')
-            if node_data == 'polymer':
-                # Parse this block unit in its own state machine
-                saved_state = self.state
-                self.state = GenerativeStateMachine()
+
+            if node_data == 'polymer_junction':
+                raw_tokens = [str(t) for t in child.scan_values(lambda x: True)]
+                raw = raw_tokens[0].strip('-').lower() if raw_tokens else ''
+                pending_kind = _KIND_MAP.get(raw, raw)
+
+            elif node_data == 'polymer':
+                atom_start = len(parent_mol.atoms)
+
+                # Reset bond state so this block's first atom doesn't
+                # inherit stale bond-order/direction from tail tokens of
+                # the previous block; current_atom_idx is deliberately
+                # left untouched so the junction bond forms via the
+                # normal implicit-bond mechanism in add_atom/add_bond.
+                self._next_bond_order = -1
+                self._next_bond_dir = 0
+                self._next_translation = (0, 0, 0)
+
+                # Dispatch to polymer() below — visits polymer_unit
+                # directly into the shared self.state, and extracts this
+                # block's own repeat_count via _parse_polymer_suffix.
                 self.visit(child)
-                self.state.finalize_valences()
-                unit_mol = self.state.mol
-                self.state = saved_state
 
-                block = PolymerBlock(
-                    unit=unit_mol,
-                    repeat_count=unit_mol.repeat_count,
-                    block_kind=current_kind,
-                )
-                self.state.mol.polymer_blocks.append(block)
-                if self.state.mol.block_topology is None and current_kind:
-                    self.state.mol.block_topology = current_kind
+                atom_end = len(parent_mol.atoms) - 1
+                block_repeat = parent_mol.repeat_count
+                parent_mol.repeat_count = None  # consumed; avoid leaking
+                                                  # into the next block or
+                                                  # the whole-molecule level
 
-
-        self.visit_children(tree)
+                block = PolymerBlock(unit=None,
+                                     repeat_count=block_repeat,
+                                     block_kind=pending_kind,
+                                     atom_start=atom_start,
+                                     atom_end=atom_end)
+                parent_mol.polymer_blocks.append(block)
+                if parent_mol.block_topology is None and pending_kind:
+                    parent_mol.block_topology = pending_kind
+                pending_kind = ''  # consumed
 
     def bond(self, tree):
         self._next_bond_order, self._next_bond_dir, self._next_hapticity, self._next_bond_class = self._get_bond_info(tree)
