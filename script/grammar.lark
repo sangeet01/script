@@ -53,7 +53,7 @@ VBAR: "|"
 // Reactions are one or more scripts separated by ">>" or "=>"
 // =============================================================
 reaction: script (reaction_arrow script)+
-reaction_arrow: ">>" | "=>"
+reaction_arrow: ">>" | "=>" | "<=>"
 
 
 // =============================================================
@@ -426,7 +426,8 @@ signed_int: "-" INT  -> neg_int
           | INT      -> pos_int
 
 // Lattice parameters: a, b, c in Angstroms; alpha, beta, gamma in degrees
-lattice_params: FLOAT "," FLOAT "," FLOAT "," FLOAT "," FLOAT "," FLOAT
+lattice_params: lattice_val "," lattice_val "," lattice_val "," lattice_val "," lattice_val "," lattice_val
+lattice_val: FLOAT | INT
 DIGIT: "0".."9"
 LETTER: "A".."Z"
 

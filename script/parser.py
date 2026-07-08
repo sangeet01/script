@@ -54,9 +54,14 @@ class SCRIPTInterpreter(Interpreter):
                     if isinstance(tok, Token) and tok.type == 'CONTEXT_LABEL':
                         context = str(tok)
                     elif isinstance(tok, Tree) and tok.data.lstrip('!') == 'lattice_params':
-                        # Parse a,b,c,alpha,beta,gamma from 6 FLOAT tokens
+                        # Parse a,b,c,alpha,beta,gamma from 6 numeric tokens.
+                        # lattice_val accepts FLOAT or INT (bare integers
+                        # like "90" for right angles are common and should
+                        # not require "90.0"), so both token types must be
+                        # collected here or the extraction silently yields
+                        # fewer than 6 values and lattice_vectors stays None.
                         floats = [float(str(f)) for f in tok.scan_values(
-                            lambda x: isinstance(x, Token) and x.type == 'FLOAT')]
+                            lambda x: isinstance(x, Token) and x.type in ('FLOAT', 'INT'))]
                         if len(floats) == 6:
                             a, b, c, alpha, beta, gamma = floats
                             import math
