@@ -216,6 +216,46 @@ Parent < [H] < Ring-Closures < Ring-Openings < Branches < Main-Chain
 
 This ordering ensures consistent chirality perception across implementations.
 
+### 6.4 Canonicalization Uniqueness Theorem
+
+**Theorem.** For any molecular graph G with a fixed set of atomic properties
+(atomic number, formal charge, isotope, hydrogen count) and stereodescriptors,
+the SCRIPT canonicalization algorithm produces exactly one string S(G).
+
+**Proof sketch.**
+
+*Step 1 — Unique atom ranking.* The Morgan/WL refinement over the invariant
+vector (AtomicNum, Degree, TotalHs, Charge, Isotope, Radical) converges to a
+stable partition. Within each symmetry class, ties are broken by a
+lexicographic comparison of the sorted neighbor-invariant tuples, then by
+atom index. This produces a total order on atoms.
+
+*Step 2 — Unique DFS traversal.* Given a total order, the DFS starting atom
+(minimum rank) is unique. At each step the traversal chooses the next
+neighbor by the same order, making every branching decision deterministic.
+The resulting DFS tree and its serialization into a SCRIPT string are
+therefore unique.
+
+*Step 3 — Unique stereo encoding.* Tetrahedral centres are encoded as `@R`
+or `@S` (Sthiti markers) derived from RDKit's CIP assignment — a
+graph-invariant label that does not depend on traversal order. E/Z centres
+are encoded by the `/`\`\` bond directions assigned relative to the unique
+DFS traversal. Both encodings are therefore determined by Step 1 and Step 2
+alone.
+
+*Corollary.* Two molecules with identical constitutions and identical
+stereodescriptors produce identical SCRIPT strings; molecules that differ
+in constitution or in any stereodescriptor produce different SCRIPT strings.
+In particular, enantiomers are distinguished by their `@R`/`@S` labels,
+and diastereomers are distinguished by either stereo labels or by different
+constitutional serializations.
+
+**Note on symmetry.** For molecules with non-trivial automorphism groups
+(e.g.\ para-disubstituted benzene), the Morgan refinement may leave atoms
+within a symmetry orbit at equal rank. Tie-breaking by atom index resolves
+this deterministically; the choice is canonical because it is the same
+choice every time for the same molecule.
+
 ---
 
 ## 7. Peptide Mode

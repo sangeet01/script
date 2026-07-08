@@ -22,10 +22,10 @@ import script
 # Encode SMILES to canonical SCRIPT
 script_str = script.smiles_to_script("CC(=O)Oc1ccccc1C(=O)O")
 print(script_str) 
-# Output: C(C(=O)O):C(OC(=O)C):C:C:C:C&6:
+# Output: C(C)(OC:C:C:C:C:C&6:C(=O)O)=O
 
 # Decode SCRIPT to SMILES
-smiles = script.script_to_smiles("C(C(=O)O):C(OC(=O)C):C:C:C:C&6:")
+smiles = script.script_to_smiles("C(C)(OC:C:C:C:C:C&6:C(=O)O)=O")
 ```
 
 ---
@@ -71,7 +71,7 @@ Morgan-invariant ranking with DFS traversal. One molecule, one string, every tim
 
 ```
 SMILES: CC(=O)Oc1ccccc1C(=O)O  (one of many valid forms)
-SCRIPT: C(C(=O)O):C(OC(=O)C):C:C:C:C&6:  (one and only one)
+SCRIPT: C(C)(OC:C:C:C:C:C&6:C(=O)O)=O  (one and only one)
 ```
 
 ### 2. Topological Ring Closures (`&N`)
@@ -273,14 +273,14 @@ from script.parser import SCRIPTParser
 from script.canonical import SCRIPTCanonicalizer
 
 parser = SCRIPTParser()
-result = parser.parse("C(C(=O)O):C(OC(=O)C):C:C:C:C&6:")  # Aspirin
+result = parser.parse("C(C)(OC:C:C:C:C:C&6:C(=O)O)=O")  # Aspirin
 mol = result["molecule"]
 
 print(f"Atoms: {len(mol.atoms)}")
 print(f"Bonds: {len(mol.bonds)}")
 
 canon = SCRIPTCanonicalizer()
-print(canon.canonicalize_core(mol))   # same string back
+print(canon.canonicalize_core(mol))   # C(C)(OC:C:C:C:C:C&6:C(=O)O)=O
 ```
 
 ### RDKit Interop
