@@ -433,10 +433,11 @@ To prove that topological back-counting scales to real complexity:
 
 ## Known Limitations
 
-- **Allenic stereo** — allene centres are detected and tagged `@AX`, but the stereo *bit* (Ra/Sa) cannot be populated from RDKit without 3D coordinates. The structural feature is recorded; the specific handedness requires geometry.
-- **Block copolymers** — `{[CC]}-b-{[styrene]}` junction notation is parsed but not yet expanded to atoms.
-- **Periodic structures** — MOFs, zeolites, unit cell connectivity. The `[[context]]` and `<~0.9>` occupancy system starts here but true periodic topology needs an adjacency model that does not yet exist.
+- **Block copolymer atomic expansion** — diblock, triblock, alternating, and statistical junction notation (`{[CC]}<n:50>-b-{[CCCO]}<n:100>`) parses and expands fully into a single connected molecular graph, with real junction bonds between blocks. Full expansion for graft copolymers with branch-point topology is not yet implemented.
 - **SMARTS-SCRIPT** — the query atom grammar covers `[#6]`, `[R]`, `[!N]`, `[v3]`, `[a]`, `[A]`. The full SMARTS feature set (`[$(...)],` recursive SMARTS, etc.) is out of scope for a representation standard; use RDKit SMARTS for that.
+- **Periodic structure reconstruction** — SCRIPT V3.6/V3.7 canonically encodes crystal and MOF connectivity via cross-cell bonds with lattice translation vectors (`Fe-@1,0,0Fe`) and unit cell parameters (`[[Rutile;4.593,4.593,2.959,90,90,90]]`), with Morgan-Weisfeiler-Lehman ranking extended to periodic graphs. Full symmetry-operation and space-group reconstruction (i.e. generating a complete CIF file from a SCRIPT string) is not implemented — SCRIPT is a notation language, not a crystallographic file format.
+
+Resolved since the last major release: allenic stereo (Ra/Sa handedness now assigned automatically from 3D conformers), block copolymer connectivity (see above), and periodic topology (LQG-compliant canonical encoding of crystal nets, addressing an open problem identified in the SELFIES 2022 roadmap paper).
 
 ---
 
