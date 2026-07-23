@@ -29,6 +29,12 @@ class SCRIPTInterpreter(Interpreter):
         self._next_hapticity = 0
         self._next_bond_class = ""
         self._next_translation = (0, 0, 0)   # V3.6 periodic topology
+        # V4 Lattice Extension pending state
+        self._pending_lattice_type = None     # str, set by [Lattice:T]
+        self._pending_thickness = None        # (cls, args_tuple), set by [Thickness:..]
+        self._pending_post_process = []       # list of (op_name, args_tuple)
+        self._pending_typed_tags = []         # [V4.1] list of (ns, val, args)
+        self._next_control_points = None      # [V4.2 Q5] list of (x,y,z) tuples
         
     def entry(self, tree):
         res = self.visit_children(tree)
@@ -37,9 +43,13 @@ class SCRIPTInterpreter(Interpreter):
 
     def macroscopic_structure(self, tree):
         context = None
+        namespace = None   # [V4 L6] "geom" / "xtal" / "chem" / None
         lattice = None   # V3.6: lattice vectors from context block
         entities = []
         phase_labels = []  # labels between VBAR tokens
+
+        # Reset pending post-process ops at the start of a structure
+        self._pending_post_process = []
 
         for child in tree.children:
             if isinstance(child, Token):
@@ -51,7 +61,11 @@ class SCRIPTInterpreter(Interpreter):
             if t == 'macroscopic_context':
                 lattice = None
                 for tok in child.children:
-                    if isinstance(tok, Token) and tok.type == 'CONTEXT_LABEL':
+                    if isinstance(tok, Token) and tok.type == 'NAMESPACE':
+                        # [V4 L6] "geom:" / "xtal:" / "chem:" prefix
+                        ns = str(tok)
+                        namespace = ns.rstrip(':')
+                    elif isinstance(tok, Token) and tok.type == 'CONTEXT_LABEL':
                         context = str(tok)
                     elif isinstance(tok, Tree) and tok.data.lstrip('!') == 'lattice_params':
                         # Parse a,b,c,alpha,beta,gamma from 6 numeric tokens.
@@ -84,11 +98,12 @@ class SCRIPTInterpreter(Interpreter):
                             context = str(tok)
             elif t in ('reaction', 'script'):
                 mols = self.visit(child)
-                def apply_context(obj, ctx=context, lat=lattice):
+                def apply_context(obj, ctx=context, lat=lattice, ns=namespace):
                     if isinstance(obj, list):
-                        for item in obj: apply_context(item, ctx, lat)
+                        for item in obj: apply_context(item, ctx, lat, ns)
                     elif isinstance(obj, CoreMolecule):
                         obj.macroscopic_context = ctx
+                        if ns: obj.context_namespace = ns
                         if lat is not None:
                             obj.lattice_vectors = lat
                 apply_context(mols)
@@ -104,6 +119,21 @@ class SCRIPTInterpreter(Interpreter):
                     apply_phase(mols)
 
                 entities.append(mols)
+            elif t == 'post_process':
+                # [V4 L5] Visit and consume one |> op(args) operation.
+                self.visit(child)
+
+        # [V4 L5] Attach pending post-process ops to the final entity.
+        if self._pending_post_process:
+            if entities:
+                target = entities[-1]
+                def apply_pp(obj, ops=self._pending_post_process):
+                    if isinstance(obj, list):
+                        for item in obj: apply_pp(item, ops)
+                    elif isinstance(obj, CoreMolecule):
+                        obj.post_process_ops.extend(ops)
+                apply_pp(target)
+            self._pending_post_process = []
 
         if len(entities) == 1:
             return entities[0]
@@ -182,6 +212,7 @@ class SCRIPTInterpreter(Interpreter):
                 self._next_bond_order = -1 
                 self._next_bond_dir = 0
                 self._next_translation = (0, 0, 0)
+                self._next_control_points = None  # [V4.2 Q5]
             elif data == 'bond':
                 self.visit(child)
             elif data == 'maybe_periodic_bond':
@@ -317,22 +348,182 @@ class SCRIPTInterpreter(Interpreter):
         self._next_bond_order, self._next_bond_dir, self._next_hapticity, self._next_bond_class = self._get_bond_info(tree)
         self._next_translation = (0, 0, 0)   # reset on plain bond visit
 
+    # =============================================================
+    # V4 Lattice Extension interpreter methods
+    # =============================================================
+    def lattice_cell(self, tree):
+        """[V4 L3] Parse [Lattice:T] and/or [Thickness:Cls(args)] then visit the chain.
+
+        The tags are sticky — they set self._pending_lattice_type /
+        self._pending_thickness so that when the inner molecular_chain
+        or polymer is visited (which calls self.state = GenerativeStateMachine()),
+        the new mol gets tagged before it leaves script().
+
+        [V4.1] Also handles generalized typed_tag children like
+        [Mesh:Icosphere(2)] or [Material:Steel]. These are stashed on
+        self._pending_typed_tags and applied to the mol as a list.
+        """
+        for child in tree.children:
+            if not isinstance(child, Tree): continue
+            data = child.data.lstrip('!')
+            if data == 'lattice_tag':
+                self._visit_lattice_tag(child)
+            elif data == 'thickness_tag':
+                self._visit_thickness_tag(child)
+            elif data == 'typed_tag':
+                # [V4.1] Generalized typed tag
+                self._visit_typed_tag(child)
+            elif data == 'lattice_subject':
+                # [V4 L3] lattice_subject wraps molecular_chain / polymer /
+                # polymer_block / peptide_chain. Visit its single child.
+                for sub in child.children:
+                    if not isinstance(sub, Tree): continue
+                    sub_data = sub.data.lstrip('!')
+                    # Set state machine with pending tags applied to its mol
+                    self.state = GenerativeStateMachine()
+                    if self._pending_lattice_type:
+                        self.state.mol.lattice_type = self._pending_lattice_type
+                        self._pending_lattice_type = None
+                    if self._pending_thickness is not None:
+                        cls, args = self._pending_thickness
+                        self.state.mol.thickness_class = cls
+                        self.state.mol.thickness_args = args
+                        self._pending_thickness = None
+                    if self._pending_typed_tags:
+                        self.state.mol.typed_tags.extend(self._pending_typed_tags)
+                        self._pending_typed_tags = []
+                    # Visit the chain into this state
+                    self.visit(sub)
+                    self.state.finalize_valences()
+
+    def _visit_typed_tag(self, tree):
+        """[V4.1] Parse a generalized typed tag [Namespace:Value(args)].
+
+        Stash as (namespace, value, args_tuple) on _pending_typed_tags.
+        [V4.3] Now handles STRING, signed_num, and ; separators.
+        """
+        ns = None; val = None; args = []
+        for child in tree.children:
+            if isinstance(child, Token):
+                if child.type == 'TAG_NAMESPACE': ns = str(child)
+                elif child.type == 'TAG_VALUE':   val = str(child)
+                elif child.type == 'STRING' and val is None:
+                    val = str(child).strip('"')   # [V4.3] STRING as tag value
+            elif isinstance(child, Tree) and child.data.lstrip('!') == 'tag_args':
+                # Collect args — positional (FLOAT/INT/IDENTIFIER/STRING/signed_num) and kv (k=v)
+                for sub in child.children:
+                    if not isinstance(sub, Tree): continue
+                    sd = sub.data.lstrip('!')
+                    if sd == 'tag_arg':
+                        for leaf in sub.children:
+                            if isinstance(leaf, Tree) and leaf.data.lstrip('!') == 'tag_kv':
+                                k = None; v = None
+                                for t in leaf.scan_values(lambda x: isinstance(x, Token)):
+                                    if t.type == 'IDENTIFIER' and k is None:
+                                        k = str(t)
+                                    elif t.type in ('FLOAT', 'INT'):
+                                        v = float(str(t)) if t.type == 'FLOAT' else int(str(t))
+                                    elif t.type == 'IDENTIFIER':
+                                        v = str(t)
+                                    elif t.type == 'STRING':
+                                        v = str(t).strip('"')
+                                if k: args.append((k, v))
+                            elif isinstance(leaf, Tree) and leaf.data.lstrip('!') in ('pos_num', 'neg_num', 'num'):
+                                # signed_num in tag_arg
+                                val_num = self._parse_signed_num(leaf)
+                                args.append(val_num)
+                            elif isinstance(leaf, Token):
+                                if leaf.type in ('FLOAT', 'INT'):
+                                    args.append(float(str(leaf)) if leaf.type == 'FLOAT' else int(str(leaf)))
+                                elif leaf.type == 'IDENTIFIER':
+                                    args.append(str(leaf))
+                                elif leaf.type == 'STRING':
+                                    args.append(str(leaf).strip('"'))
+        if ns and val:
+            self._pending_typed_tags.append((ns, val, tuple(args)))
+
+    def _visit_lattice_tag(self, tree):
+        """Extract LATTICE_TYPE token and stash on _pending_lattice_type."""
+        for t in tree.scan_values(lambda x: isinstance(x, Token)):
+            if t.type == 'LATTICE_TYPE':
+                self._pending_lattice_type = str(t)
+                return
+        self._pending_lattice_type = 'Custom'
+
+    def _visit_thickness_tag(self, tree):
+        """Extract THICKNESS_CLASS + optional args. Stash as (cls, args_tuple)."""
+        cls = None
+        args = []
+        for child in tree.children:
+            if isinstance(child, Token) and child.type == 'THICKNESS_CLASS':
+                cls = str(child)
+            elif isinstance(child, Tree) and child.data.lstrip('!') == 'thickness_args':
+                # Collect FLOAT / INT / IDENTIFIER tokens in order
+                for sub in child.iter_subtrees():
+                    for t in sub.children if hasattr(sub, 'children') else []:
+                        pass
+                # Simpler: scan all tokens in thickness_args
+                for t in child.scan_values(lambda x: isinstance(x, Token)):
+                    s = str(t)
+                    if t.type in ('FLOAT', 'INT'):
+                        try:
+                            args.append(float(s) if t.type == 'FLOAT' else int(s))
+                        except: pass
+                    elif t.type == 'IDENTIFIER':
+                        args.append(s)
+        self._pending_thickness = (cls or 'Constant', tuple(args))
+
+    def post_process(self, tree):
+        """[V4 L5] Parse one |> op(args) post-process operation.
+
+        Stash on self._pending_post_process so macroscopic_structure can
+        attach the ordered list to the final CoreMolecule.
+        """
+        op_name = None
+        args = []
+        for child in tree.children:
+            if isinstance(child, Token) and child.type == 'PIPE_OP':
+                op_name = str(child)
+            elif isinstance(child, Tree) and child.data.lstrip('!') == 'pipe_args':
+                # Collect positional + kv args
+                for sub in child.children:
+                    if not isinstance(sub, Tree): continue
+                    sd = sub.data.lstrip('!')
+                    if sd == 'pipe_arg':
+                        # pipe_arg: pipe_kv | FLOAT | INT
+                        for leaf in sub.children:
+                            if isinstance(leaf, Tree) and leaf.data.lstrip('!') == 'pipe_kv':
+                                k = None; v = None
+                                for t in leaf.scan_values(lambda x: isinstance(x, Token)):
+                                    if t.type == 'IDENTIFIER' and k is None:
+                                        k = str(t)
+                                    elif t.type in ('FLOAT', 'INT'):
+                                        v = float(str(t)) if t.type == 'FLOAT' else int(str(t))
+                                if k: args.append((k, v))
+                            elif isinstance(leaf, Token) and leaf.type in ('FLOAT', 'INT'):
+                                args.append(float(str(leaf)) if leaf.type == 'FLOAT' else int(str(leaf)))
+        if op_name:
+            self._pending_post_process.append((op_name, tuple(args)))
+
     def maybe_periodic_bond(self, tree):
         """
         V3.6: bond optionally followed by @tx,ty,tz translation vector.
-        Children: [bond_tree] or [bond_tree, signed_int, signed_int, signed_int]
+        Children: [bond_tree] or [bond_tree, signed_num, signed_num, signed_num]
+
+        [V4.2 Q2] signed_num now accepts FLOAT, so fractional translations
+        like @0.5,0.5,0.5 work for crystallographic coordinates.
         """
         from lark import Tree as LarkTree
         children = [c for c in tree.children if c is not None]
         # First child is always the bond subtree
         bond_tree = children[0]
         self._next_bond_order, self._next_bond_dir, self._next_hapticity, self._next_bond_class = self._get_bond_info(bond_tree)
-        # If there are signed_int children, extract translation
+        # If there are signed_num children, extract translation
         sint_nodes = [c for c in children[1:] if isinstance(c, LarkTree)]
         if len(sint_nodes) == 3:
-            tx = self._parse_signed_int(sint_nodes[0])
-            ty = self._parse_signed_int(sint_nodes[1])
-            tz = self._parse_signed_int(sint_nodes[2])
+            tx = self._parse_signed_num(sint_nodes[0])
+            ty = self._parse_signed_num(sint_nodes[1])
+            tz = self._parse_signed_num(sint_nodes[2])
             self._next_translation = (tx, ty, tz)
         else:
             self._next_translation = (0, 0, 0)
@@ -342,6 +533,39 @@ class SCRIPTInterpreter(Interpreter):
 
     def pos_int(self, tree):
         return int(str(tree.children[0]))
+
+    # [V4.2 Q2] num / neg_num / pos_num handlers for float translations
+    def neg_num(self, tree):
+        return -self._parse_num(tree.children[-1])
+
+    def pos_num(self, tree):
+        return self._parse_num(tree.children[0])
+
+    def num(self, tree):
+        return self._parse_num(tree.children[0])
+
+    def _parse_num(self, node) -> float:
+        """Parse a num token (INT or FLOAT) to Python float.
+        Handles both Token (direct) and Tree (num rule wrapping a token).
+        """
+        from lark import Tree, Token
+        if isinstance(node, Tree):
+            # num rule wraps a FLOAT or INT token — extract it
+            if node.data == 'num':
+                for child in node.children:
+                    if isinstance(child, Token):
+                        return self._parse_num(child)
+            return 0.0
+        if isinstance(node, Token):
+            s = str(node)
+            if node.type == 'FLOAT':
+                return float(s)
+            elif node.type == 'INT':
+                return float(s)
+        try:
+            return float(str(node))
+        except (ValueError, TypeError):
+            return 0.0
 
     def _parse_signed_int(self, node) -> int:
         """Parse a signed_int tree node to Python int.
@@ -359,6 +583,20 @@ class SCRIPTInterpreter(Interpreter):
             return int(str(node))
         return 0
 
+    def _parse_signed_num(self, node) -> float:
+        """[V4.2 Q2] Parse a signed_num tree node to Python float.
+        Accepts both int and float translations.
+        """
+        from lark import Tree, Token
+        if isinstance(node, Tree):
+            if node.data == 'neg_num':
+                return -self._parse_num(node.children[-1])
+            elif node.data == 'pos_num':
+                return self._parse_num(node.children[0])
+        if isinstance(node, Token):
+            return self._parse_num(node)
+        return 0.0
+
     def hbond(self, tree):
         # hbond = STAR_BOND INT  -> haptic bond with explicit hapticity number
         tokens = [t for t in tree.scan_values(lambda x: isinstance(x, Token))]
@@ -371,15 +609,45 @@ class SCRIPTInterpreter(Interpreter):
         self._next_bond_class = "star"
         self._next_hapticity = hapticity
 
+    def spline_explicit(self, tree):
+        """[V4.2 Q5] Parse ~[x,y,z;x,y,z;...] explicit spline control points.
+
+        Sets bond_class='spline' and stashes control points on
+        self._next_control_points for the next bond construction.
+        """
+        from lark import Tree as LarkTree
+        ctrl_points = []
+        for child in tree.children:
+            if isinstance(child, LarkTree) and child.data.lstrip('!') == 'ctrl_point':
+                # ctrl_point: signed_num "," signed_num "," signed_num
+                nums = []
+                for sub in child.children:
+                    if isinstance(sub, LarkTree):
+                        val = self._parse_signed_num(sub)
+                        nums.append(val)
+                if len(nums) == 3:
+                    ctrl_points.append(tuple(nums))
+        self._next_bond_order = 1
+        self._next_bond_class = "spline"
+        self._next_control_points = ctrl_points if ctrl_points else None
+
     def _get_bond_info(self, bond_node):
         # Extract bond type, direction, and bond_class from a bond node.
         # Note: hapticity (eta-n) is now handled by hbond() directly.
+        # [V4.2 Q5] Handle spline_explicit as a child Tree of bond
+        from lark import Tree as LarkTree
+        for child in bond_node.children:
+            if isinstance(child, LarkTree) and child.data.lstrip('!') == 'spline_explicit':
+                # Spline with explicit control points — dispatch to handler
+                self.spline_explicit(child)
+                return self._next_bond_order, 0, 0, self._next_bond_class
+
         tokens = [t for t in bond_node.scan_values(lambda x: isinstance(x, Token))]
         if not tokens: return 1, 0, 0, ""
-        
+
         t_type = tokens[0].type
         hapticity = 0
-        
+
         order = 1
         direction = 0
         bond_class = ""
@@ -393,7 +661,9 @@ class SCRIPTInterpreter(Interpreter):
         elif t_type == 'STAR_BOND': order = 4; bond_class = "star"
         elif t_type == 'DATIVE': order = 1; bond_class = "dative"
         elif t_type == 'REV_DATIVE': order = 1; bond_class = "rev_dative"
-        
+        elif t_type == 'SPLINE_BOND': order = 1; bond_class = "spline"   # [V4 L1]
+        elif t_type == 'BRIDGE_BOND': order = 1; bond_class = "bridge"   # [V4.3] 3c2e
+
         return order, direction, hapticity, bond_class
 
     def atom_expr(self, tree):
@@ -440,6 +710,7 @@ class SCRIPTInterpreter(Interpreter):
                     bond_dir=self._next_bond_dir,
                     bond_class=self._next_bond_class,
                     translation=self._next_translation,
+                    control_points=self._next_control_points,
                 )
                 if is_wildcard:
                     self.state.mol.atoms[-1].is_wildcard = True
@@ -488,6 +759,7 @@ class SCRIPTInterpreter(Interpreter):
                     break
 
         if not is_wildcard and not is_query:
+            beam_radius = None  # [V4.2] extract from state_block
             for child in node.children:
                 if not isinstance(child, Tree): continue
                 t = child.data.lstrip('!')
@@ -501,6 +773,16 @@ class SCRIPTInterpreter(Interpreter):
                     radical = len([c for c in val if c == '.'])
                 elif t == 'ring_class':
                     mapping = int("".join(filter(str.isdigit, val)))
+                elif t == 'state_block':
+                    # [V4.2] Extract beam_radius (and spin/occupancy/is_excited)
+                    # from state_block inside bracket atoms
+                    for sub in child.children:
+                        if not isinstance(sub, Tree): continue
+                        st = sub.data.lstrip('!')
+                        sval = "".join([str(leaf) for leaf in sub.scan_values(lambda x: not isinstance(x, Tree))])
+                        if sval.startswith('r:'):
+                            try: beam_radius = float(sval[2:])
+                            except: beam_radius = None
 
         self.state.add_atom(element, charge=charge, isotope=isotope,
                             hcount=hcount, chiral=chiral,
@@ -509,7 +791,9 @@ class SCRIPTInterpreter(Interpreter):
                             bond_class=self._next_bond_class,
                             is_bracket=True, mapping=mapping,
                             radical=radical,
-                            translation=self._next_translation)
+                            translation=self._next_translation,
+                            control_points=self._next_control_points,
+                            beam_radius=beam_radius if 'beam_radius' in dir() else None)
         atom = self.state.mol.atoms[-1]
         if is_wildcard:
             atom.is_wildcard = True
@@ -586,6 +870,7 @@ class SCRIPTInterpreter(Interpreter):
         occupancy = 1.0
         spin = 0
         is_excited = False
+        beam_radius = None   # [V4 L2]
         
         has_bracket_attr = False
         for child in node.children:
@@ -604,6 +889,10 @@ class SCRIPTInterpreter(Interpreter):
                         if st == 'isotope': isotope = int(sval) if sval else 0
                         elif st == 'charge': charge = self._parse_charge(sval)
                         elif st == 'hcount': hcount = self._parse_hcount(sval)
+                        elif sval.startswith('r:'):
+                            # [V4 L2] beam radius ratio <r:0.5>
+                            try: beam_radius = float(sval[2:])
+                            except: beam_radius = None
                         elif sval.startswith('~'):
                             try: occupancy = float(sval[1:])
                             except: occupancy = 1.0
@@ -628,8 +917,11 @@ class SCRIPTInterpreter(Interpreter):
                             is_bracket=has_bracket_attr,
                             mapping=mapping,
                             occupancy=occupancy, spin=spin, is_excited=is_excited,
-                            translation=self._next_translation)
+                            translation=self._next_translation,
+                            beam_radius=beam_radius,
+                            control_points=self._next_control_points)
         self._next_translation = (0, 0, 0)
+        self._next_control_points = None  # [V4.2 Q5] reset after consumption
 
     def _parse_polymer_suffix(self, suffix_tree) -> None:
         """Extract repeat count from polymer_suffix and store on current mol."""

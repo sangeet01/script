@@ -49,6 +49,12 @@ class SCRIPTValidator:
             
         for match in re.finditer(r'\{([^\}]*)\}', script_string):
             inner = match.group(1)
+            # [V4.2 Q5] Skip spline_explicit control point blocks (~{...})
+            # which contain digits/commas/semicolons, not amino acid codes.
+            # Find the start of the match and check if preceded by ~
+            start = match.start()
+            if start > 0 and script_string[start-1] == '~':
+                continue  # spline control points, not a peptide
             for part in inner.split('.'):
                 if len(part) == 1 and part not in self.valid_amino_acids:
                     return False

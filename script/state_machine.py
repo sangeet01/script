@@ -14,8 +14,12 @@ DEFAULT_VALENCE = {
 }
 
 # Maximum valences for hypervalent atoms (only allowed in brackets)
+# [V4.3] N can be 4-coordinate ONLY when positively charged (ammonium,
+# coordination complexes with charged ligands). B and C similarly.
+# The _get_max_valence method checks charge to allow this.
 HYPERVALENT_MAX = {
-    "P": 5, "S": 6, "Cl": 7, "Br": 7, "I": 7, "Xe": 8, "As": 5, "Se": 6
+    "P": 5, "S": 6, "Cl": 7, "Br": 7, "I": 7, "Xe": 8, "As": 5, "Se": 6,
+    # N, B, C: only hypervalent when charged (see _get_max_valence)
 }
 
 # Transition metals: variable oxidation states, use generous upper limit
@@ -56,7 +60,9 @@ class GenerativeStateMachine:
                  mapping: int = 0, occupancy: float = 1.0, 
                  spin: int = 0, is_excited: bool = False,
                  bond_class: str = "", radical: int = 0,
-                 translation: tuple = (0, 0, 0)) -> int:
+                 translation: tuple = (0, 0, 0),
+                 beam_radius: Optional[float] = None,
+                 control_points: Optional[List] = None) -> int:
         """Add an atom and move the state pointer to it."""
         is_wildcard = (symbol == '*')
         atomic_num = 0 if is_wildcard else self._get_atomic_num(symbol)
@@ -64,7 +70,8 @@ class GenerativeStateMachine:
                         isotope=isotope, symbol=symbol,
                         is_aromatic=is_aromatic, mapping=mapping,
                         occupancy=occupancy, spin=spin, is_excited=is_excited,
-                        is_wildcard=is_wildcard)
+                        is_wildcard=is_wildcard,
+                        beam_radius=beam_radius)
         
         atom.implicit_hs = hcount if hcount is not None else 0
         atom.radical_electrons = radical
@@ -166,7 +173,8 @@ class GenerativeStateMachine:
         if self.current_atom_idx is not None:
             ok = self.add_bond(self.current_atom_idx, atom_idx, bond_order,
                           bond_dir=bond_dir, bond_class=bond_class,
-                          translation=translation)
+                          translation=translation,
+                          control_points=control_points)
             if not ok:
                 self.valence_violations.append((self.current_atom_idx, atom_idx, bond_order))
             self.parents[atom_idx] = self.current_atom_idx
@@ -176,10 +184,12 @@ class GenerativeStateMachine:
 
     def add_bond(self, u_idx: int, v_idx: int, order: int, bond_dir: int = 0,
                  hapticity: int = 0, bond_class: str = "",
-                 translation: tuple = (0, 0, 0)) -> bool:
+                 translation: tuple = (0, 0, 0),
+                 control_points: Optional[List] = None) -> bool:
         """
         Add or upgrade a bond between u and v with 'Sandhi' valence guards.
         bond_class maps to BondType for semantically-typed bonds.
+        [V4.2 Q5] control_points carries explicit spline control points.
         """
         if u_idx == v_idx: return False
 
@@ -190,16 +200,22 @@ class GenerativeStateMachine:
             'coordinate': BondType.COORDINATE,
             'star':       BondType.STAR,
             'tautomeric': BondType.TAUTOMERIC,
+            'spline':     BondType.SPLINE,   # [V4 L1]
+            'bridge':     BondType.BRIDGE,   # [V4.3] 3c2e
         }
         # For dative/coordinate/special bonds: bypass Sandhi valence guard
         # (metal centres and donor-acceptor pairs have variable valence)
+        # [V4.3] BRIDGE bonds also bypass — 3c2e bonds are electron-deficient
+        # and don't follow classical valence. They contribute 0.5 to valence
+        # (2 electrons shared over 3 centers ≈ 0.67, conventionally 0.5).
         if bond_class in _class_to_type:
             special_type = _class_to_type[bond_class]
             # Check not already bonded
             if self.mol.get_bond(u_idx, v_idx) is None:
                 self.mol.add_bond(u_idx, v_idx, special_type, bond_dir=bond_dir,
                                   hapticity=hapticity, bond_class=bond_class,
-                                  translation=translation)
+                                  translation=translation,
+                                  control_points=control_points)
                 self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
                 self.mol.atoms[v_idx]._initial_nbrs.append(u_idx)
                 # Paribhasa: dative bonds consume valence only on the DONOR.
@@ -207,6 +223,10 @@ class GenerativeStateMachine:
                 # REV_DATIVE (B<-N): v=donor. Only v's valence used.
                 # TAUTOMERIC: shared mobile bond, count both atoms.
                 # COORDINATE/STAR: metal centre, no valence increment.
+                # [V4.3] BRIDGE: 3c2e bond — contributes 0.5 to each atom
+                # (2 electrons / 3 centers). This allows electron-deficient
+                # compounds like diborane (B2H6) where each B has 4 neighbors
+                # but only 3 electron pairs.
                 if bond_class == 'dative':
                     self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 1
                 elif bond_class == 'rev_dative':
@@ -214,7 +234,11 @@ class GenerativeStateMachine:
                 elif bond_class == 'tautomeric':
                     self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 1
                     self.valence_used[v_idx] = self.valence_used.get(v_idx, 0) + 1
-                # coordinate / star: no valence increment (metal centre)
+                elif bond_class == 'bridge':
+                    # 3c2e: each atom contributes 0.5 valence
+                    self.valence_used[u_idx] = self.valence_used.get(u_idx, 0) + 0.5
+                    self.valence_used[v_idx] = self.valence_used.get(v_idx, 0) + 0.5
+                # coordinate / star / spline: no valence increment (metal centre / geometry)
             return True
         
         # Resolve implicit bond (-1)
@@ -304,7 +328,8 @@ class GenerativeStateMachine:
 
         self.mol.add_bond(u_idx, v_idx, bt, bond_dir=bond_dir,
                           hapticity=hapticity, bond_class=bond_class,
-                          translation=translation)
+                          translation=translation,
+                          control_points=control_points)
         
         # Track "Vak Order" for chirality resolution
         self.mol.atoms[u_idx]._initial_nbrs.append(v_idx)
@@ -535,6 +560,16 @@ class GenerativeStateMachine:
             return TRANSITION_METAL_MAX_VALENCE
         
         base = DEFAULT_VALENCE.get(symbol, 4)
+        
+        # [V4.3] N, B, C can be hypervalent (4-coordinate) when:
+        #   - In brackets (explicit notation), AND
+        #   - Either charged (e.g., [NH4+]) OR bonded to a metal (coordination)
+        # This allows EDTA-Mg, ammonium salts, boron hydrides, etc.
+        # while still rejecting bare 4-coordinate N (without brackets/charge).
+        if symbol in ('N', 'B', 'C') and self.is_bracket.get(atom_idx, False):
+            charge = getattr(atom, 'formal_charge', 0)
+            if charge > 0:  # positively charged → allow hypervalent
+                return base + charge
         
         # Formal charge shifts available valence:
         # [N+] has valence 4, [N-] has valence 2, [O+] has valence 3, etc.

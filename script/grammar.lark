@@ -8,6 +8,26 @@
 //   3. Extended Polymers (Stochastic)-> polymer_block, polymer_junction
 //   4. Electronic & Excited States   -> state_attr: "s:" INT, "*"
 //   5. Surface & Interface Chemistry -> phase_boundary: "|"
+//
+// V4 Lattice Extension (LEAP71 Bridge):
+//   L1. Spline bond                ~>          -> bond: SPLINE_BOND
+//   L2. Beam radius state attr     <r:float>   -> state_attr: "r:" FLOAT
+//   L3. Lattice component tag      [Lattice:T] -> lattice_cell component
+//   L4. Thickness class tag        [Thickness:Cls(args)] -> thickness_class
+//   L5. Post-process pipe ops      | overoffset(3,0) | intersect  -> post_process
+//   L6. Macroscopic namespace      [[geom:..]] / [[xtal:..]]      -> optional prefix
+//
+// Design notes (V4):
+//   * Conformal cell arrays are encoded by the macroscopic_context label
+//     (e.g. [[BaseSphere_r50]]). Vertex coords are NOT stored in the
+//     string; they are derived by the bridge from the label + cell count.
+//     This preserves canonicalization (one design -> one string).
+//   * nSubSample (beam thickness resolution) is a render-time parameter
+//     in | render(subsample=N), not a topology parameter.
+//   * Spline control points: ~> is canonical (PRNG seeded from canonical
+//     string hash); ~[p1;p2;...] is explicit escape hatch.
+//   * Bounding-voxel queries (BoundaryBeamThickness) are resolved by the
+//     bridge from the macroscopic_context label. The IR does not evaluate.
 
 
 // === Lark Directives ===
@@ -36,13 +56,30 @@
 
 ?entry: macroscopic_structure
 
-macroscopic_structure: macroscopic_context VBAR? (reaction | script) (VBAR (reaction | script))*
-                     | (reaction | script) (VBAR (reaction | script))*
+macroscopic_structure: macroscopic_context VBAR? (reaction | script) (VBAR (reaction | script))* post_process*
+                     | (reaction | script) (VBAR (reaction | script))* post_process*
 
 // V3.2 Crystallography (Sthana) - space group / unit cell label
 // Optional lattice parameters: [[Rutile;4.593,4.593,2.959,90,90,90]]
-macroscopic_context: "[[" CONTEXT_LABEL (";" lattice_params)? "]]"
-CONTEXT_LABEL: /[A-Za-z0-9_-]+/
+// V4 L6: Optional namespace prefix for disambiguation:
+//        [[xtal:Rutile]]  chemistry (explicit)
+//        [[geom:BaseSphere_r50]]  geometry/bounding shape (explicit)
+//        [[Rutile]]       bare (chemistry, backward compatible)
+//        [[BaseSphere_r50]]  bare with Base* prefix (auto-dispatches to geometry)
+macroscopic_context: "[[" NAMESPACE? CONTEXT_LABEL (";" lattice_params)? (";" q_vector)? (";" k_vector)? "]]"
+NAMESPACE.5: ("geom:" | "xtal:" | "chem:" | "bio:" | "mat:" | "sim:"
+            | "astro:" | "env:" | "phys:" | "med:" | "eng:"
+            | /[a-z][a-z0-9_]*:/)   // [V4.1] any lowercase namespace + ":"
+// [V4.1] CONTEXT_LABEL now allows spaces and a wider char set so
+// labels like 'Steel AISI 1045' or 'FE static load 100N' work.
+CONTEXT_LABEL: /[A-Za-z0-9_ \-\.]+/
+
+// [V4.3 T2.3] Modulation q-vector for incommensurate / modulated structures
+//   [[xtal:P1;q:0.31,0,0]]  — modulation wavevector
+// [V4.3 T1.2] Magnetic k-vector for AFM propagation
+//   [[mag:Pnma;k:0,0,0.5]]  — AFM propagation vector
+q_vector: "q:" signed_num "," signed_num "," signed_num
+k_vector: "k:" signed_num "," signed_num "," signed_num
 
 // V3.5 Surface & Interface Chemistry (Adhikarana) - phase separator
 VBAR: "|"
@@ -51,9 +88,23 @@ VBAR: "|"
 // =============================================================
 // REACTION GRAMMAR (The Kriya)
 // Reactions are one or more scripts separated by ">>" or "=>"
+// [V4.3 T2.1] Phase transitions: >>(T=1185K) carries conditions
+//   [[xtal:BCC]] Fe >>(T=1185) [[xtal:FCC]] Fe
+// We use ( ) not [ ] for conditions to avoid LALR ambiguity with
+// bracket_atom (which also starts with [).
+// [V4.3] The 2nd+ sides of a reaction can carry their own
+// macroscopic_context, enabling phase transitions between different
+// crystal structures. The 1st side gets its context from the
+// enclosing macroscopic_structure.
 // =============================================================
-reaction: script (reaction_arrow script)+
-reaction_arrow: ">>" | "=>" | "<=>"
+reaction: script (reaction_arrow macroscopic_context? script)+
+reaction_arrow: ">>" transition_condition?
+              | "=>" transition_condition?
+              | "<=>" transition_condition?
+
+// [V4.3 T2.1] Transition condition: temperature, pressure, field, etc.
+transition_condition: "(" condition_kv ("," condition_kv)* ")"
+condition_kv: IDENTIFIER "=" (FLOAT | INT | IDENTIFIER)
 
 
 // =============================================================
@@ -68,6 +119,108 @@ component: peptide_chain
          | polymer_block
          | molecular_chain
          | ring_closure          // Standalone Anubandha ring (v1.5)
+         | lattice_cell          // [V4 L3] Tagged lattice component
+
+
+// =============================================================
+// V4 LATTICE EXTENSION (LEAP71 Bridge)
+//
+// Lattice components are typed annotations layered on top of an
+// existing molecular_chain / polymer. The underlying graph is still
+// atoms + bonds; the tags tell a downstream bridge (e.g. PicoGK) how
+// to interpret the graph as a beam lattice.
+//
+// Examples:
+//   [Lattice:BodyCentered] {[C]}<n:5-5-5>
+//   [Thickness:Constant(2.0)] [Lattice:BodyCentered] {[C]}<n:5-5-5>
+//   [[BaseSphere_r50]] [Thickness:Boundary] [Lattice:BodyCentered] {[C]}<n:5-5-5> | intersect
+//
+// V4.1 GENERALIZED TYPED TAGS:
+//   Any [Namespace:Value(args)] now parses via the typed_tag rule.
+//   lattice_tag and thickness_tag are special cases for backward compat.
+//   Examples:
+//     [Mesh:Icosphere(2)]              — meshing strategy
+//     [Material:Steel]                 — material assignment
+//     [Solver:FEM(order=2)]            — solver configuration
+//     [Export:STL(binary)]             — export format
+//     [Lattice:BodyCentered]           — V4 L3 (existing)
+//     [Thickness:Constant(2.0)]        — V4 L4 (existing)
+// =============================================================
+lattice_cell: lattice_tag thickness_tag? lattice_subject
+            | thickness_tag lattice_tag? lattice_subject
+            | lattice_tag typed_tag* lattice_subject        // [V4.1] Lattice + general tags
+            | typed_tag+ lattice_subject                    // [V4.1] general tags only
+
+lattice_subject: molecular_chain
+               | polymer
+               | polymer_block
+               | peptide_chain
+
+// [V4 L3] Lattice tag — recognized by literal "Lattice:" prefix so it
+// doesn't get captured by the general typed_tag rule. The TAG_VALUE
+// regex would otherwise match "Lattice" as a namespace.
+lattice_tag: "[" "Lattice:" LATTICE_TYPE "]"
+LATTICE_TYPE: ("BodyCentered" | "Octahedron" | "RandomSpline" | "Custom" | /[A-Z][A-Za-z0-9_]*/)
+
+thickness_tag: "[" "Thickness:" THICKNESS_CLASS ("(" thickness_args ")")? "]"
+THICKNESS_CLASS: ("Constant" | "CellBased" | "GlobalFunc" | "Boundary" | /[A-Z][A-Za-z0-9_]*/)
+thickness_args: thickness_arg ("," thickness_arg)*
+thickness_arg: FLOAT | INT | IDENTIFIER
+IDENTIFIER: /[a-zA-Z_][a-zA-Z0-9_]*/
+
+// [V4.1] Generalized typed tag: [Namespace:Value(args)]
+//   TAG_NAMESPACE: PascalCase identifier followed by ":"
+//   Must be >= 3 chars and contain at least one lowercase letter
+//   (to avoid matching element symbols like "O4", "S2", "Fe", "He").
+//   The (?=:) lookahead ensures we're inside a tag context.
+//   Negative lookahead excludes Lattice and Thickness (dedicated rules).
+typed_tag: "[" TAG_NAMESPACE ":" (TAG_VALUE | STRING) ("(" tag_args? ")")? "]"
+TAG_NAMESPACE: /(?!Lattice|Thickness)[A-Z][A-Za-z0-9_]*[a-z_][A-Za-z0-9_]*(?=:)/
+TAG_VALUE: /[A-Z][A-Za-z0-9_\-]*/
+tag_args: tag_arg (("," | ";") tag_arg)*    // [V4.3] ; for stacking disorder [Stack:ABC;ABA]
+tag_arg: tag_kv | signed_num | IDENTIFIER | STRING
+tag_kv: IDENTIFIER "=" (signed_num | IDENTIFIER | STRING)
+
+// [V4.3] STRING literal for tag args that need special chars (-, (), etc.)
+//   [KPath:"Gamma(0,0,0)-X(0.5,0,0)"]  — explicit k-point coords
+//   [Path:"NEB(0,0,0)-(0.5,0.5,0.5)"]  — NEB diffusion path
+STRING: "\"" /[^"]*/ "\""
+
+
+// =============================================================
+// V4 L5: POST-PROCESS PIPELINE
+//
+// Pipe-forward style post-processing operators applied to the
+// voxelized result. These are RENDER-time ops, not topology — they
+// do not affect canonicalization of the underlying graph.
+//
+// We use |>(pipe-forward, Elixir/F# style) rather than bare | because
+// | is already taken by VBAR (phase boundary). LALR(1) cannot
+// disambiguate "| overoffset(3,0)" (post-process) from "| CCO" (phase
+// boundary to a new molecule) without backtracking.
+//
+// Syntax:  |> op_name(arg, arg, ...)   |> op_name   (no args)
+// Examples:
+//   |> overoffset(3,0)    // Sh.voxOverOffset(voxLattice, 3, 0)
+//   |> intersect          // Sh.voxIntersect(voxLattice, voxBounding)
+//   |> smoothen           // Sh.voxSmoothen(voxLattice)
+//   |> offset(1)          // Sh.voxOffset(voxLattice, 1)
+//   |> render(subsample=5)  // sets nSubSample for beam thickness queries
+// =============================================================
+post_process: PIPE_FWD PIPE_OP ("(" pipe_args? ")")?
+PIPE_FWD: "|>"
+// [V4.1] PIPE_OP now accepts any lowercase identifier — the known ops
+// (smoothen, overoffset, intersect, offset, render) are listed first
+// for documentation; the regex fallback lets any op name parse so the
+// grammar can express arbitrary pipelines (subdivide, bevel, export,
+// morgan, gaussian, etc.) without grammar changes.
+PIPE_OP: ("smoothen" | "overoffset" | "intersect" | "offset" | "render"
+         | "subdivide" | "bevel" | "smooth" | "cap" | "export"
+         | "mesh" | "remesh" | "decimate" | "boolean"
+         | /[a-z][a-z0-9_]*/)
+pipe_args: pipe_arg ("," pipe_arg)*
+pipe_arg: pipe_kv | FLOAT | INT | IDENTIFIER
+pipe_kv: IDENTIFIER "=" (FLOAT | INT | IDENTIFIER)
 
 
 // =============================================================
@@ -99,9 +252,27 @@ state_block: "<" state_attr ("," state_attr)* ">"
            | GEOMETRY       // Coordination geometry:     <sqp>, <oct>
            | H_COUNT_ATTR   // Explicit H count:          <h3>
            | "m"            // Tautomer / Mobility flag:  <m>
-           | "~" FLOAT      // Vikalpa - Alloy occupancy: <~0.9>    [V3.1]
-           | "s:" INT       // Svara   - Spin multiplicity:<s:3>    [V3.4]
-           | "*"            // Excited state marker:       <*>       [V3.4]
+           | "~" FLOAT      // Vikalpa - Alloy occupancy: <~0.9>          [V3.1]
+           | "~" FLOAT "-" FLOAT  // [V4.3 T1.5] Composition range: <~0.5-0.7>
+           | "s:" INT       // Svara - Spin multiplicity: <s:3>          [V3.4]
+           | "*"            // Excited state marker:       <*>            [V3.4]
+           | "r:" (FLOAT | INT)   // Beam radius ratio:    <r:0.5>, <r:2>  [V4 L2]
+           | SPIN_UP        // [V4.3 T1.2] Magnetic spin up:    <↑>
+           | SPIN_DOWN      // [V4.3 T1.2] Magnetic spin down:  <↓>
+           | SPIN_PAIRED    // [V4.3 T1.2] Spin paired (no net): <↑↓>
+           | "m:" signed_num "," signed_num "," signed_num  // [V4.3 T1.2] Magnetic moment vector <m:0,0,2.2>
+           | "occ:" FLOAT   // [V4.3 T1.1] Explicit site occupancy (for defects) <occ:0.5>
+           | "pos:" pos_alt (";" pos_alt)*  // [V4.3 T2.4] Positional disorder (split sites)
+           | "od" INT        // [V4.3 T2.4] Orientational disorder <od4> (n-fold)
+           | "sd" IDENTIFIER // [V4.3 T2.4] Stacking disorder <sdABC>
+
+// [V4.3 T2.4] Positional disorder: alternative positions separated by ;
+//   <pos:0.5,0.5,0.5;0.5,0.5,0.6>  — two alternative sites
+pos_alt: signed_num "," signed_num "," signed_num
+
+SPIN_UP: "\u2191"        // ↑
+SPIN_DOWN: "\u2193"      // ↓
+SPIN_PAIRED: "\u2191\u2193"  // ↑↓ (must precede SPIN_UP for longest match)
 
 
 // =============================================================
@@ -120,10 +291,23 @@ WILDCARD: "*"
 // Supports: [13C@H-:1]  (isotope, chiral, H, charge, mapping)
 //           [O.]         (radical)
 //           [Fe]         (transition metal)
+// [V4.3 T1.1] Defect atoms: [_:Fe] vacancy, [I:C] interstitial
 // =============================================================
 bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? state_block? "]"
             | "[" "*" "]"           // Wildcard atom [*] — scaffold attachment, query atom
             | "[" query_atom "]"    // Query atom — SMARTS-style substructure patterns
+            | "[" defect_type ":" element? state_block? "]"   // [V4.3 T1.1] Defect atom
+
+// [V4.3 T1.1] Defect types for materials science
+//   [_:Fe]   — vacancy at Fe site (empty lattice position)
+//   [Df:C]   — interstitial C (Df = DeFect interstitial marker)
+//   [V:Cl]<->— F-center (Cl vacancy with trapped electron)
+// NOTE: "Df" for interstitial avoids collision with indium (In) and
+// iodine (I). The lookahead (?=:) ensures "Df" only matches as a defect
+// marker when followed by ":", so it doesn't conflict with other uses.
+defect_type: DEFECT_VACANCY | DEFECT_INTERSTITIAL
+DEFECT_VACANCY: "_" | "V"       // _ or V (must not conflict with Vanadium)
+DEFECT_INTERSTITIAL: /Df(?=:)/  // [V4.3] DeFect interstitial, requires ":"
 
 // Query atoms (Praśna — the question/pattern)
 // These are pattern atoms for substructure search, not canonical representations.
@@ -137,8 +321,17 @@ bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? 
 //   [R] [!R]  ring / non-ring
 //   [#6,#7]   OR query (carbon or nitrogen)
 //
+// [V4.3] Recursive SMARTS: [?(PATTERN)] — atom must satisfy PATTERN
+//   [?(C(=O)O)]            — atom that is part of a carboxylic acid
+//   [!?(N=O)]              — atom NOT part of a nitro group
+//   [C;?(C:C:C:C:C:C&6:)]  — carbon AND in aromatic 6-ring
+//
+// The ?(...) contains a SCRIPT molecular_chain matched as a substructure
+// starting from this atom. This is the SMARTS \$(...) equivalent.
 query_atom: query_primitive ("," query_primitive)*   // OR of primitives
           | query_primitive (";" query_primitive)*   // AND of primitives
+
+RECURSIVE_QUERY: "?(" /(?:[^()]|\([^()]*\))*/ ")"    // [V4.3] ?(PATTERN) — allows 1 level of nested ()
 
 query_primitive: "!" query_primitive                         // negation
                | "#" INT                                     // atomic number
@@ -150,6 +343,10 @@ query_primitive: "!" query_primitive                         // negation
                | "a"                                         // aromatic
                | "A"                                         // aliphatic
                | QUERY_ELEM                                  // element symbol in query context
+               | RECURSIVE_QUERY                             // [V4.3] recursive SMARTS
+
+// [V4.3] Recursive pattern content (captured as raw string for matching)
+// The bridge interprets this as a SCRIPT substructure to match.
 
 // Element symbols allowed inside query atoms
 // (separate terminal to avoid reduce/reduce collision with 'element' rule)
@@ -232,6 +429,19 @@ bond: DATIVE             // Dative:         ->
     | DOWN_BOND          // Stereo down:     \
     | COORDINATE_BOND    // Coordinate:      >
     | hbond              // Haptic: *INT  or bare * (resonance)
+    | SPLINE_BOND        // Spline beam:    ~>            [V4 L1]
+    | spline_explicit    // Spline w/ explicit control points: ~[x,y,z;...]  [V4.2 Q5]
+    | BRIDGE_BOND        // 3-center-2-electron: <>  [V4.3] (diborane, carboranes)
+
+// [V4.2 Q5] Explicit spline control points: ~{x1,y1,z1;x2,y2,z2;...}
+// Each point is a 3D coordinate. Use ; to separate points.
+// Example: C~{0.0,0.0,0.0;1.0,1.0,1.0;2.0,0.0,0.0}C
+//
+// NOTE: We use ~{ ... } instead of ~[ ... ] to avoid LALR ambiguity with
+// fragment_separator ~ followed by bracket_atom [Cl-]. The { char is only
+// used for peptide_chain/polymer, so ~{ is unambiguous as a spline start.
+spline_explicit: "~{" ctrl_point (";" ctrl_point)* "}"
+ctrl_point: signed_num "," signed_num "," signed_num
 
 // hbond: STAR_BOND INT = haptic eta-n bond (explicit hapticity number required).
 // NOTE (fix): previously `hbond: STAR_BOND INT?` also allowed a bare STAR_BOND
@@ -256,6 +466,8 @@ UP_BOND: "/"
 DOWN_BOND: "\\"
 COORDINATE_BOND: ">"
 STAR_BOND: "*"
+SPLINE_BOND: "~>"   // [V4 L1] Spline beam — must precede EXPLICIT_MOBILE's ~:
+BRIDGE_BOND: "<>"   // [V4.3] 3-center-2-electron bridge (diborane, carboranes)
 
 
 
@@ -420,10 +632,18 @@ RATIO: INT "_" INT
 //   [[Rutile;4.593,4.593,2.959,90,90,90]]
 //    = label + a(Å), b(Å), c(Å), α(°), β(°), γ(°)
 // =============================================================
-maybe_periodic_bond: bond ("@" signed_int "," signed_int "," signed_int)?
+maybe_periodic_bond: bond ("@" signed_num "," signed_num "," signed_num)?
 
+// [V4.2 Q2] signed_num accepts INT or FLOAT, so crystallographic fractional
+// translations like @0.5,0.5,0.5 work alongside integer @1,0,0.
 signed_int: "-" INT  -> neg_int
           | INT      -> pos_int
+
+// [V4.2 Q2] signed_num: int or float, with optional sign
+signed_num: "-" num  -> neg_num
+          | num      -> pos_num
+
+num: FLOAT | INT
 
 // Lattice parameters: a, b, c in Angstroms; alpha, beta, gamma in degrees
 lattice_params: lattice_val "," lattice_val "," lattice_val "," lattice_val "," lattice_val "," lattice_val

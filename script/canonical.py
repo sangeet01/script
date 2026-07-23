@@ -45,7 +45,27 @@ class SCRIPTCanonicalizer:
     """
 
     def canonicalize_mol(self, mol):
-        """Deprecated: Use canonicalize_core or rdkit_bridge.SCRIPTFromMol."""
+        """Deprecated: Use canonicalize_core or rdkit_bridge.SCRIPTFromMol.
+
+        Accepts either a CoreMolecule (preferred) or an RDKit Mol (legacy).
+        RDKit Mol inputs are converted via rdkit_bridge.from_rdkit first.
+        """
+        # CoreMolecule path — fast path, no conversion needed
+        if hasattr(mol, 'atoms') and hasattr(mol, 'bonds') and hasattr(mol, 'adj'):
+            return self.canonicalize_core(mol)
+        # RDKit Mol path — convert to CoreMolecule first
+        # Detect RDKit Mol by duck-typing (avoid hard rdkit import dependency)
+        if hasattr(mol, 'GetNumAtoms') and hasattr(mol, 'GetAtoms'):
+            try:
+                from .rdkit_bridge import from_rdkit
+                core = from_rdkit(mol)
+                if core is None:
+                    return None
+                return self.canonicalize_core(core)
+            except ImportError:
+                pass
+        # Last resort — try canonicalize_core (will raise AttributeError
+        # if mol doesn't have .atoms, which is the original behavior)
         return self.canonicalize_core(mol)
 
     def canonicalize_mols(self, mol_or_list) -> Optional[str]:
@@ -117,25 +137,65 @@ class SCRIPTCanonicalizer:
         prefix = ''
         ctx = getattr(mol, 'macroscopic_context', None)
         lv  = getattr(mol, 'lattice_vectors',     None)
+        ns  = getattr(mol, 'context_namespace', None)   # [V4 L6] geom/xtal/chem
         if ctx:
+            ns_prefix = f'{ns}:' if ns else ''
             if lv is not None:
                 # Convert 3x3 lattice vectors back to a,b,c,alpha,beta,gamma
                 params = _lattice_vectors_to_params(lv)
                 if params:
                     a, b, c, alpha, beta, gamma = params
-                    prefix = (f"[[{ctx};{a:.4f},{b:.4f},{c:.4f},"
+                    prefix = (f"[[{ns_prefix}{ctx};{a:.4f},{b:.4f},{c:.4f},"
                               f"{alpha:.2f},{beta:.2f},{gamma:.2f}]]")
                 else:
-                    prefix = f"[[{ctx}]]"
+                    prefix = f"[[{ns_prefix}{ctx}]]"
             else:
-                prefix = f"[[{ctx}]]"
+                prefix = f"[[{ns_prefix}{ctx}]]"
+
+        # [V4 L3/L4] Lattice + Thickness tags
+        lat_type = getattr(mol, 'lattice_type', None)
+        thick_cls = getattr(mol, 'thickness_class', None)
+        thick_args = getattr(mol, 'thickness_args', None) or ()
+        # Tags go AFTER the macroscopic_context but BEFORE the body,
+        # space-separated. Order: thickness first, then lattice — by convention
+        # from the proposal (Thickness modulates the lattice, so it reads first).
+        tag_parts = []
+        if thick_cls:
+            if thick_args:
+                arg_str = ','.join(str(a) for a in thick_args)
+                tag_parts.append(f'[Thickness:{thick_cls}({arg_str})]')
+            else:
+                tag_parts.append(f'[Thickness:{thick_cls}]')
+        if lat_type:
+            tag_parts.append(f'[Lattice:{lat_type}]')
+        if tag_parts:
+            tag_block = ' '.join(tag_parts)
+            prefix = (prefix + ' ' + tag_block).strip() if prefix else tag_block
 
         # Phase boundary
         pb = getattr(mol, 'phase_boundary', None)
         if pb:
             prefix = prefix + ' | ' if prefix else '| '
 
-        return prefix + body if prefix else body
+        # [V4 L5] Post-process ops appended after the body, |> op(args) style.
+        suffix = ''
+        pp_ops = getattr(mol, 'post_process_ops', None) or []
+        if pp_ops:
+            for op_name, op_args in pp_ops:
+                if op_args:
+                    # Render positional args + kv args
+                    parts = []
+                    for a in op_args:
+                        if isinstance(a, tuple) and len(a) == 2:
+                            parts.append(f'{a[0]}={a[1]}')
+                        else:
+                            parts.append(str(a))
+                    suffix += f' |> {op_name}({",".join(parts)})'
+                else:
+                    suffix += f' |> {op_name}'
+
+        body_with_suffix = body + suffix if suffix else body
+        return prefix + body_with_suffix if prefix else body_with_suffix
 
     def _find_components(self, mol: CoreMolecule) -> List[List[int]]:
         """Find all connected components via BFS.
@@ -494,6 +554,8 @@ class SCRIPTCanonicalizer:
                 and (not hasattr(atom, 'mapping') or atom.mapping == 0)
                 and getattr(atom, 'spin', 0) == 0
                 and not getattr(atom, 'is_excited', False)
+                and getattr(atom, 'occupancy', 1.0) >= 1.0
+                and getattr(atom, 'beam_radius', None) is None  # [V4.2] beam_radius needs brackets
                 and self._has_default_valence(atom, mol, atom_idx)):
             return symbol
 
@@ -519,6 +581,23 @@ class SCRIPTCanonicalizer:
         if getattr(atom, 'mapping', 0) > 0:
             parts.append(f':{atom.mapping}')
 
+        # [V4.2] state_block: emit spin, excited, occupancy, beam_radius
+        # These are dhatu-style attributes that go inside <> after the atom.
+        state_parts = []
+        if getattr(atom, 'spin', 0) > 0:
+            state_parts.append(f's:{atom.spin}')
+        if getattr(atom, 'is_excited', False):
+            state_parts.append('*')
+        occupancy = getattr(atom, 'occupancy', 1.0)
+        if occupancy < 1.0:
+            state_parts.append(f'~{occupancy}')
+        beam_radius = getattr(atom, 'beam_radius', None)
+        if beam_radius is not None:
+            # Format: 0.5 -> "0.5", 2.0 -> "2.0" (keep .0 for floats)
+            state_parts.append(f'r:{beam_radius}')
+        if state_parts:
+            parts.append('<' + ','.join(state_parts) + '>')
+
         parts.append(']')
         return "".join(parts)
 
@@ -533,6 +612,8 @@ class SCRIPTCanonicalizer:
         elif bt == BondType.TAUTOMERIC: base = '=:'
         elif bt == BondType.COORDINATE: base = '>'
         elif bt == BondType.STAR:     base = '*'
+        elif bt == BondType.SPLINE:   base = '~>'   # [V4 L1]
+        elif bt == BondType.BRIDGE:   base = '<>'   # [V4.3] 3c2e bridge
         # Legacy int fallback
         elif bt == 2: base = '='
         elif bt == 3: base = '#'
@@ -562,6 +643,8 @@ class SCRIPTCanonicalizer:
             base = ''
 
         # V3.6: append translation vector for periodic/cross-cell bonds
+        # [V4.2 Q2] translations are now floats; normalize -0.0 to 0.0
+        # and format ints without trailing .0 for backward compat
         t = getattr(bond, 'translation', (0, 0, 0))
         if t != (0, 0, 0):
             # Normalise direction: store as seen from begin_atom_idx → end_atom_idx
@@ -569,11 +652,20 @@ class SCRIPTCanonicalizer:
                 tx, ty, tz = t
             else:
                 tx, ty, tz = -t[0], -t[1], -t[2]
+            # Normalize -0.0 to 0.0 (negative zero causes canonicalization mismatches)
+            tx = 0.0 if tx == 0 else tx
+            ty = 0.0 if ty == 0 else ty
+            tz = 0.0 if tz == 0 else tz
+            # Format: int values without .0, floats with minimal precision
+            def fmt(v):
+                if v == int(v):
+                    return str(int(v))
+                return repr(v)
             # Single bonds must be explicit when carrying a translation vector
             # so the output is reparseable (bare '@' after atom is ambiguous)
             if base == '':
                 base = '-'
-            base = f"{base}@{tx},{ty},{tz}"
+            base = f"{base}@{fmt(tx)},{fmt(ty)},{fmt(tz)}"
 
         return base
 

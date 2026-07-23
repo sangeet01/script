@@ -22,6 +22,8 @@ class BondType(IntEnum):
     TAUTOMERIC = 7   # =:  mobile / tautomeric (keto-enol etc.)
     COORDINATE = 8   # >   coordinate / haptic (organometallics)
     STAR       = 9   # *   resonance / haptic wildcard
+    SPLINE     = 10  # ~>  spline beam (V4 L1 — LEAP71 RandomSplineLattice)
+    BRIDGE     = 11  # <>  3-center-2-electron bridge (V4.3 — diborane, carboranes)
 
 
 class StereoType(IntEnum):
@@ -61,7 +63,8 @@ class CoreAtom:
                  symbol: str = "", is_aromatic: bool = False,
                  mapping: int = 0, occupancy: float = 1.0,
                  spin: int = 0, is_excited: bool = False,
-                 is_wildcard: bool = False):
+                 is_wildcard: bool = False,
+                 beam_radius: Optional[float] = None):
         self.atomic_num = atomic_num
         self.formal_charge = formal_charge
         self.isotope = isotope
@@ -73,6 +76,11 @@ class CoreAtom:
         self.spin = spin
         self.is_excited = is_excited
         self.is_wildcard = is_wildcard       # True for '*' query/scaffold atoms
+        # V4 L2: beam radius ratio (LEAP71 IBeamThickness).  None = no
+        # explicit per-vertex radius; the bridge falls back to the
+        # Thickness:class on the molecule.  When set, overrides the
+        # class for beams touching this vertex.
+        self.beam_radius: Optional[float] = beam_radius
         self.rank = -1
         self.coords: Optional[Tuple[float, float, float]] = None
         self.implicit_hs: int = 0
@@ -100,7 +108,8 @@ class CoreBond:
     def __init__(self, begin_atom_idx: int, end_atom_idx: int,
                  bond_type: Any, bond_dir: int = 0,
                  hapticity: int = 0, bond_class: str = "",
-                 translation: Tuple[int, int, int] = (0, 0, 0)):
+                 translation: Tuple[int, int, int] = (0, 0, 0),
+                 control_points: Optional[List[Tuple[float, float, float]]] = None):
         self.begin_atom_idx = begin_atom_idx
         self.end_atom_idx = end_atom_idx
         # Normalise to BondType enum if an int is passed (backward compat)
@@ -112,13 +121,18 @@ class CoreBond:
         self.bond_type: BondType = bond_type
         self.bond_dir = bond_dir      # 0: None, 3: Up(/), 4: Down(\)
         self.hapticity = hapticity    # eta-n for haptic organometallics
-        self.bond_class = bond_class  # "dative","rev_dative","coordinate","star",""
+        self.bond_class = bond_class  # "dative","rev_dative","coordinate","star","spline",""
         self.is_rc = False            # ring closure bond
         self.is_aromatic = False      # part of aromatic/resonant system
         # Periodic topology: integer lattice translation vector (tx, ty, tz).
         # (0,0,0) for all intracell bonds; non-zero for bonds that cross unit-cell
         # boundaries in MOF/zeolite frameworks.  Ignored for non-periodic molecules.
-        self.translation: Tuple[int, int, int] = translation
+        # [V4.2 Q2] Now accepts floats for crystallographic fractional translations.
+        self.translation = translation
+        # [V4.2 Q5] Explicit spline control points (None for non-spline bonds).
+        # Each point is a (x, y, z) tuple. Used by RandomSplineLattice and
+        # hand-authored curves (protein loops, RNA pseudoknots).
+        self.control_points: Optional[List[Tuple[float, float, float]]] = control_points
 
 class PolymerBlock:
     """
@@ -191,6 +205,33 @@ class CoreMolecule:
         # is_periodic: True when at least one bond has a non-zero translation vector.
         self.is_periodic: bool = False
 
+        # ---- V4 Lattice Extension (LEAP71 Bridge) ----
+        # lattice_type: tagged on molecules parsed from
+        #   [Lattice:BodyCentered] {...} etc.  Tells the bridge which
+        #   ILatticeType subclass to construct.
+        self.lattice_type: Optional[str] = None
+        # thickness_class + thickness_args: tagged from
+        #   [Thickness:Constant(2.0)] etc.  Tells the bridge which
+        #   IBeamThickness subclass to construct.
+        self.thickness_class: Optional[str] = None
+        self.thickness_args: Optional[Tuple] = None
+        # post_process_ops: ordered list of (op_name, args) tuples
+        #   applied to the voxelized lattice.  Render-time only —
+        #   does not affect canonicalization of the graph.
+        #   Example: [("overoffset", (3.0, 0.0)), ("intersect", ())]
+        self.post_process_ops: List[Tuple[str, Tuple]] = []
+        # namespace: optional disambiguator parsed from [[geom:..]] /
+        #   [[xtal:..]].  "geom" = bounding shape (LEAP71 BaseShape),
+        #   "xtal" = crystallographic context (existing V3 semantics),
+        #   None = bare label (auto-dispatch by Base* prefix).
+        self.context_namespace: Optional[str] = None
+
+        # [V4.1] Generalized typed tags: list of (namespace, value, args)
+        # tuples for any [Namespace:Value(args)] tags that weren't
+        # recognized as Lattice or Thickness.  Order preserved.
+        # Example: [("Mesh", "Icosphere", (2,)), ("Material", "Steel", ())]
+        self.typed_tags: List[Tuple[str, str, Tuple]] = []
+
     def add_atom(self, atom: CoreAtom) -> int:
         idx = len(self.atoms)
         self.atoms.append(atom)
@@ -200,11 +241,13 @@ class CoreMolecule:
 
     def add_bond(self, begin_idx: int, end_idx: int, bond_type: Any,
                  bond_dir: int = 0, hapticity: int = 0, bond_class: str = "",
-                 translation: Tuple[int, int, int] = (0, 0, 0)):
+                 translation: Tuple[int, int, int] = (0, 0, 0),
+                 control_points: Optional[List[Tuple[float, float, float]]] = None):
         bond_idx = len(self.bonds)
         bond = CoreBond(begin_idx, end_idx, bond_type, bond_dir,
                         hapticity=hapticity, bond_class=bond_class,
-                        translation=translation)
+                        translation=translation,
+                        control_points=control_points)
         self.bonds.append(bond)
         self.adj[begin_idx].append((end_idx, bond_idx))
         self.adj[end_idx].append((begin_idx, bond_idx))

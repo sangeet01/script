@@ -113,14 +113,17 @@ def test_v3():
     check("Mapped reaction", "[C:1]>>[C:1]")
     check("Salt", "[Na+].[Cl-]")
     check("Haptic bond eta-5", "[Fe]*5CCCCC")
-    check("Bare star bond", "C*C")
+    check("Bare star bond (deprecated V4.4)", "C*C", expect_success=False)
 
     print()
     print("=" * 60)
     print(f"TOTAL: {passed} passed, {failed} failed out of {passed+failed}")
     print("=" * 60)
-    return failed == 0
+    assert failed == 0
 
 if __name__ == "__main__":
-    ok = test_v3()
-    exit(0 if ok else 1)
+    try:
+        test_v3()
+        exit(0)
+    except AssertionError:
+        exit(1)

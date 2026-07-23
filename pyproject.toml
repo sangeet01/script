@@ -60,6 +60,9 @@ where = ["."]
 include = ["script*"]
 exclude = ["tests*"]
 
+[tool.setuptools.package-data]
+script = ["*.lark"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

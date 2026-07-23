@@ -50,18 +50,22 @@ def _calculate_ranks_uncached(mol) -> Dict[int, int]:
 
     is_periodic = getattr(mol, 'is_periodic', False)
 
-    # 1. Initial Invariants: (AtomicNum, Degree, TotalHs, Charge, Isotope, Radical)
+    # 1. Initial Invariants: (AtomicNum, Degree, TotalHs, Charge, Isotope, Radical,
+    #    BeamRadius)  [V4: beam_radius added so atoms with different radii get distinct ranks]
     invariants = []
     for i in range(num_atoms):
         atom = mol.atoms[i]
         degree = len(mol.adj.get(i, []))
+        br = getattr(atom, 'beam_radius', None)
+        br_val = -1.0 if br is None else br
         inv = (
             atom.atomic_num,
             degree,
             atom.implicit_hs,
             atom.formal_charge,
             atom.isotope,
-            atom.radical_electrons
+            atom.radical_electrons,
+            br_val
         )
         invariants.append(inv)
 
@@ -116,17 +120,27 @@ def _get_bond_order(bt) -> int:
         # purposes, matching the original substring-based semantics.
         if v in (1, 2, 3, 4):
             return v
+        if v == 10:   # SPLINE [V4 L1]
+            return 5
+        if v == 11:   # BRIDGE [V4.3] 3c2e
+            return 6
         return 0
     # Fallback for RDKit BondType (no .value) or bare ints.
     if isinstance(bt, int):
         if bt in (1, 2, 3, 4):
             return bt
+        if bt == 10:
+            return 5
+        if bt == 11:
+            return 6
         return 0
     s = str(bt)
     if 'SINGLE' in s: return 1
     if 'DOUBLE' in s: return 2
     if 'TRIPLE' in s: return 3
     if 'AROMATIC' in s: return 4
+    if 'SPLINE' in s: return 5   # [V4 L1]
+    if 'BRIDGE' in s: return 6   # [V4.3] 3c2e
     return 0
 
 def _stable_hash(obj) -> int:
