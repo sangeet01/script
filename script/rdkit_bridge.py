@@ -359,6 +359,23 @@ def CoreToRDKit(core_mol: CoreMolecule) -> Optional[Any]:
                 elif bond_data.bond_dir == 4:
                     rd_bond.SetBondDir(Chem.BondDir.ENDUPRIGHT)
 
+                # SetStereoAtoms logic for E/Z stereochemistry
+                if bond_data.bond_dir in (3, 4) and bt == Chem.BondType.DOUBLE:
+                    idx1 = bond_data.begin_atom_idx
+                    idx2 = bond_data.end_atom_idx
+                    ref1 = None
+                    for n in mol.GetAtomWithIdx(idx1).GetNeighbors():
+                        if n.GetIdx() != idx2:
+                            ref1 = n.GetIdx()
+                            break
+                    ref2 = None
+                    for n in mol.GetAtomWithIdx(idx2).GetNeighbors():
+                        if n.GetIdx() != idx1:
+                            ref2 = n.GetIdx()
+                            break
+                    if ref1 is not None and ref2 is not None:
+                        rd_bond.SetStereoAtoms(ref1, ref2)
+
         mol.UpdatePropertyCache(strict=False)
 
         # Wire tetrahedral stereo (done before sanitization so chiral tags

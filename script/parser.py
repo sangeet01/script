@@ -464,6 +464,8 @@ class SCRIPTInterpreter(Interpreter):
                         pass
                 # Simpler: scan all tokens in thickness_args
                 for t in child.scan_values(lambda x: isinstance(x, Token)):
+                    if not isinstance(t, Token):
+                        continue
                     s = str(t)
                     if t.type in ('FLOAT', 'INT'):
                         try:
@@ -758,8 +760,9 @@ class SCRIPTInterpreter(Interpreter):
                     element = query_data.get('symbol', '*')
                     break
 
+        beam_radius = None  # [V4.2] always defined; extracted below if state_block present
+
         if not is_wildcard and not is_query:
-            beam_radius = None  # [V4.2] extract from state_block
             for child in node.children:
                 if not isinstance(child, Tree): continue
                 t = child.data.lstrip('!')
@@ -793,7 +796,7 @@ class SCRIPTInterpreter(Interpreter):
                             radical=radical,
                             translation=self._next_translation,
                             control_points=self._next_control_points,
-                            beam_radius=beam_radius if 'beam_radius' in dir() else None)
+                            beam_radius=beam_radius)
         atom = self.state.mol.atoms[-1]
         if is_wildcard:
             atom.is_wildcard = True

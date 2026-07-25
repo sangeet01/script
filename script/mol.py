@@ -165,9 +165,10 @@ class PolymerBlock:
         self.atom_end: Optional[int] = atom_end
 
     def __repr__(self) -> str:
+        atom_count = len(getattr(self.unit, "atoms", []) or [])
         return ("PolymerBlock(kind=" + repr(self.block_kind) +
                 ", repeat=" + repr(self.repeat_count) +
-                ", atoms=" + str(len(self.unit.atoms)) + ")")
+                ", atoms=" + str(atom_count) + ")")
 
 
 class CoreMolecule:
