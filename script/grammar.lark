@@ -494,8 +494,14 @@ local_ring: ring_closure
           | "%" DIGIT DIGIT    // Legacy: 10-99 atoms back
           | named_ring         // Legacy: [A], [B] polycycles
 
-ring_closure: "&" INT anubandha?
+ring_closure: "&" INT (anubandha | BRIDGE_BOND)?
 anubandha: ":"   // Resonant / Aromatic  — &6: = 6-membered aromatic
+// [V4.4] &N<> closes a ring via a 3c-2e bridge bond, needed for cyclic
+// electron-deficient systems e.g. diborane's B-H-B-H four-membered ring.
+// No group ID needed (unlike a naive two-leg-pairing design) because
+// BRIDGE_BOND already carries its full semantic meaning as a bond TYPE;
+// each atom incident on a BRIDGE bond simply accrues 0.5 valence per
+// leg, so pairing is implicit in the graph topology, not in the syntax.
          | "-"   // Aliphatic / Standard — &6- = 6-membered aliphatic (was &6.)
                  // '-' matches the existing SINGLE_BOND token semantic,
                  // removing the previous collision where '.' served both as

@@ -424,9 +424,13 @@ class SCRIPTCanonicalizer:
                             # (shouldn't happen in normal DFS, but guards edge cases)
                             topo_size = atom_string_id - atom_to_id[nbr_idx] + 1
                         is_arom = mol.bonds[bond_idx].bond_type == BondType.AROMATIC
-                        anubandha = ":" if is_arom else "-"
+                        is_bridge = mol.bonds[bond_idx].bond_type == BondType.BRIDGE
+                        if is_bridge:
+                            anubandha = "<>"
+                        else:
+                            anubandha = ":" if is_arom else "-"
                         bond_sym = self._bond_symbol(mol.bonds[bond_idx], nbr_idx, mol, ranks)
-                        if is_arom: bond_sym = "" # redundant for &6:
+                        if is_arom or is_bridge: bond_sym = "" # redundant for &6: and &6<>
                         ring_closures.append((topo_size, f"{bond_sym}&{topo_size}{anubandha}", nbr_idx))
                     else:
                         # This shouldn't happen with sorted DFS

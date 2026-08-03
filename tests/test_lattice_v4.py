@@ -16,7 +16,8 @@ Run: python /home/z/my-project/scripts/test_lattice_v4.py
 """
 
 import sys
-sys.path.insert(0, '/home/z/my-project/repos/script')
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from script.parser import SCRIPTParser
 from script.mol import BondType, CoreMolecule

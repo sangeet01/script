@@ -13,7 +13,8 @@ Covers:
 """
 
 import sys
-sys.path.insert(0, '/home/z/my-project/repos/script')
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from script.parser import SCRIPTParser
 from script.canonical import SCRIPTCanonicalizer
@@ -59,6 +60,11 @@ print('\n--- Boron Hydrides ---')
 check('diborane B2H6', 
       'B(H)(H)<>H<>B(H)(H)H',
       expect_atoms=8, expect_bridges=2)
+
+# Diborane B2H6 cyclic ring closure (&N<>)
+check('diborane B2H6 cyclic (&4<>)',
+      'B(H)(H)<>H<>B(H)(H)<>H&4<>',
+      expect_atoms=8, expect_bridges=4)
 
 # Diborane alternative notation (creates a chain, not real diborane)
 check('diborane chain (alt)',
@@ -124,6 +130,7 @@ print('\n--- Round-trip Canonicalization ---')
 print('  Round-trip tests:')
 rt_tests = [
     'B(H)(H)<>H<>B(H)(H)H',
+    'B(H)(H)<>H<>B(H)(H)<>H&4<>',
     'B<>H<>B',
     '[Al](C)(C)<>C<>[Al](C)(C)',
     'Be(H)<>H<>Be(H)',

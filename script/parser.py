@@ -1108,7 +1108,7 @@ class SCRIPTInterpreter(Interpreter):
         return True
 
     def local_ring(self, tree):
-        # Check for V2 ring closures: &INT: or &INT.
+        # Check for V2 ring closures: &INT: or &INT. or &INT<>
         ring_closure_nodes = list(tree.find_data('ring_closure'))
         if ring_closure_nodes:
             # It's an Anubandha ring closure
@@ -1122,8 +1122,18 @@ class SCRIPTInterpreter(Interpreter):
             ring_size = int(ring_size_str) if ring_size_str else 0
             
             is_resonant = ":" in tokens
-            
-            self.state.add_v2_ring(ring_size, is_resonant, bond_order=self._next_bond_order)
+            # [V4.4] &N<> closes a ring via a 3c-2e bridge bond (e.g. the
+            # B-H-B-H ring in diborane). BRIDGE_BOND ("<>") is not
+            # all-digit, so it is safely ignored by the ring_size
+            # extraction above and detected here independently.
+            is_bridge = "<>" in tokens
+
+            if is_bridge:
+                self.state.add_v2_ring(ring_size, is_resonant=False,
+                                       bond_order=self._next_bond_order,
+                                       bond_class="bridge")
+            else:
+                self.state.add_v2_ring(ring_size, is_resonant, bond_order=self._next_bond_order)
             return
 
         # Look for named ring or digits (Legacy)

@@ -16,7 +16,8 @@ Covers every feature added in Parts 1-4:
 """
 
 import sys
-sys.path.insert(0, '/home/z/my-project/repos/script')
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from script.parser import SCRIPTParser
 from script.canonical import SCRIPTCanonicalizer

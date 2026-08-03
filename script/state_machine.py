@@ -400,7 +400,8 @@ class GenerativeStateMachine:
             if bond:
                 bond.is_rc = True
 
-    def add_v2_ring(self, ring_size: int, is_resonant: bool, bond_order: int = -1):
+    def add_v2_ring(self, ring_size: int, is_resonant: bool, bond_order: int = -1,
+                     bond_class: str = ""):
         """Close a V2 ring setting aromatic/resonant flags automatically over the topological cycle."""
         if self.current_atom_idx is None: return
         if ring_size < 3: return # Invalid ring size
@@ -417,9 +418,18 @@ class GenerativeStateMachine:
         if is_resonant:
             aromatic_path = self._find_existing_path(target_idx, self.current_atom_idx)
 
-        # The bond itself
-        bo = 4 if (is_resonant or bond_order == 4) else (1 if bond_order == -1 else bond_order)
-        self.add_bond(self.current_atom_idx, target_idx, bo)
+        # The bond itself.
+        # [V4.4] &N<> closes a ring via a 3c-2e bridge bond (bond_class
+        # "bridge"), routed through the same fractional (0.5-per-atom)
+        # valence accounting as linear-chain BRIDGE_BOND legs — needed
+        # for cyclic electron-deficient systems e.g. diborane's
+        # four-membered B-H-B-H ring, which cannot be expressed as a
+        # linear chain alone.
+        if bond_class == "bridge":
+            self.add_bond(self.current_atom_idx, target_idx, 1, bond_class="bridge")
+        else:
+            bo = 4 if (is_resonant or bond_order == 4) else (1 if bond_order == -1 else bond_order)
+            self.add_bond(self.current_atom_idx, target_idx, bo)
 
         bond = self.mol.get_bond(self.current_atom_idx, target_idx)
         if bond:

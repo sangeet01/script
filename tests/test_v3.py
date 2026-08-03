@@ -7,6 +7,9 @@ Tests all 5 domains from remaining.md:
   4. Electronic & Excited States    (Svara)
   5. Surface & Interface Chemistry  (Adhikarana)
 """
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from script.parser import SCRIPTParser
 from script.mol import CoreMolecule
 
