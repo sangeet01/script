@@ -299,7 +299,7 @@ def main():
     api_tests = [
         ("CCO", "Ethanol"),
         ("OCC", "Ethanol reversed"),
-        ("c1ccccc1", "Benzene"),
+        ("C:C:C:C:C:C&6:", "Benzene (SCRIPT)"),
         ("CC(=O)O", "Acetic acid"),
     ]
 

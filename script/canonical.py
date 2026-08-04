@@ -168,6 +168,54 @@ class SCRIPTCanonicalizer:
                 tag_parts.append(f'[Thickness:{thick_cls}]')
         if lat_type:
             tag_parts.append(f'[Lattice:{lat_type}]')
+
+        # [V4.6] Generalized typed_tags: emit [Namespace:Value(args)] for each
+        # tag in mol.typed_tags.  Tags are sorted by (namespace, value, args)
+        # for canonical determinism.  Args are rendered as:
+        #   - int / float: bare number (1, 2.5)
+        #   - str (identifier-like): bare (Steel, Icosphere)
+        #   - str (with spaces/special): double-quoted ("gamma x")
+        #   - (k, v) tuple: k=v
+        typed_tags = getattr(mol, 'typed_tags', None) or []
+        if typed_tags:
+            def _render_arg(a):
+                if isinstance(a, tuple) and len(a) == 2:
+                    k, v = a
+                    return f'{k}={_render_arg(v)}'
+                if isinstance(a, bool):
+                    return 'true' if a else 'false'
+                if isinstance(a, (int, float)):
+                    # Render int without trailing .0
+                    if isinstance(a, float) and a.is_integer():
+                        return str(int(a))
+                    return str(a)
+                if isinstance(a, str):
+                    # Quote if it contains spaces, special chars, or is empty.
+                    # Characters that would break the grammar: whitespace,
+                    # comma (arg separator), parens (args block), brackets
+                    # (tag delimiters), quote (escape), colon (ns separator),
+                    # semicolon (tag separator), hyphen (clashes with SINGLE_BOND).
+                    if not a or any(ch in a for ch in ' \t,()[]":;-'):
+                        return f'"{a}"'
+                    return a
+                return str(a)
+
+            def _tag_sort_key(tag):
+                ns, val, args = tag
+                # Build a string key for stable sort
+                args_str = ','.join(_render_arg(a) for a in args)
+                return (ns.lower(), val.lower(), args_str)
+
+            for ns, val, args in sorted(typed_tags, key=_tag_sort_key):
+                # Render value with same quoting rules as args — values like
+                # "Gamma(0,0,0)-X(0.5,0,0)" must be quoted to round-trip.
+                val_rendered = _render_arg(val) if isinstance(val, str) else str(val)
+                if args:
+                    arg_str = ','.join(_render_arg(a) for a in args)
+                    tag_parts.append(f'[{ns}:{val_rendered}({arg_str})]')
+                else:
+                    tag_parts.append(f'[{ns}:{val_rendered}]')
+
         if tag_parts:
             tag_block = ' '.join(tag_parts)
             prefix = (prefix + ' ' + tag_block).strip() if prefix else tag_block
@@ -516,7 +564,14 @@ class SCRIPTCanonicalizer:
 
         # Determine chiral symbol based on stereo_type
         chiral_sym = ""
-        if stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL):
+        # [V4.6] Anomeric α/β label takes precedence — it's a semantic
+        # sugar-stereo marker that the user explicitly wrote.  We emit it
+        # verbatim so the canonical form preserves the anomeric designation
+        # regardless of the underlying @/@@ Vak configuration.
+        anomeric = getattr(atom, '_anomeric', None)
+        if anomeric in ('a', 'b'):
+            chiral_sym = "@a" if anomeric == 'a' else "@b"
+        elif stereo_t in (StereoType.NONE, StereoType.TETRAHEDRAL):
             # Sthiti form: if the atom has been resolved to CIP-absolute
             # (either via @R/@S input or via the resolver's Vak→CIP
             # transform), emit the frame-independent @R/@S marker.
@@ -683,6 +738,12 @@ class SCRIPTCanonicalizer:
             if bt in (BondType.DOUBLE, 2):     valence += 2
             elif bt in (BondType.TRIPLE, 3):   valence += 3
             elif bt in (BondType.AROMATIC, 4): valence += 1.5
+            elif bt == BondType.BRIDGE:
+                # [V4.6] 3-center-2-electron bridge bond: state_machine.py
+                # counts each bridge as 0.5 valence (2e/3 centers).  Mirror
+                # that here so canonicalization correctly decides whether
+                # the atom needs explicit brackets + H count.
+                valence += 0.5
             elif bt in (BondType.DATIVE, BondType.REV_DATIVE,
                         BondType.COORDINATE, BondType.TAUTOMERIC,
                         BondType.STAR, 5, 6, 7, 8, 9):

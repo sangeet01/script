@@ -341,3 +341,143 @@ NUCLEOTIDE_BASES = {
     "rC": ("cytidine",       False, "n1ccc(N)nc1=O"),
     "rU": ("uridine",        False, "n1cccc(=O)[nH]1=O"),
 }
+
+
+# ============================================================================
+# Polyatomic ion registry
+# ============================================================================
+# Maps FORMULA (canonical uppercase, no charge) -> {charge_str: expansion_script}
+#
+# The expansion is a valid SCRIPT substring that produces the correct atomic
+# graph when parsed.  The parser's _handle_bracket_atom method looks up this
+# registry when it encounters a POLYATOMIC_FORMULA token in the grammar.
+#
+# This follows the same pattern as amino acid residues in peptide.py: the
+# expansion data lives as reference data in mol.py, and the parser handles
+# expansion through the normal state-machine path (Sandhi-validated).
+#
+# Charge strings use the canonical SCRIPT charge suffix:
+#   '-'   for -1,   '--'  for -2,   '-3'  for -3
+#   '+'   for +1,   '++'  for +2,   '+3'  for +3
+
+POLYATOMIC_IONS: Dict[str, Dict[str, str]] = {
+    # ---- Sulfur oxoanions ----
+    'SO4': {
+        '-2': '[S]([O-])([O-])(=O)(=O)',         # sulfate
+        '-':  '[S]([O-])(=O)(=O)([OH])',         # bisulfate (HSO4-)
+    },
+    'SO3': {
+        '-2': '[S]([O-])([O-])(=O)',             # sulfite
+        '-':  '[S]([O-])(=O)([OH])',             # bisulfite (HSO3-)
+    },
+    'S2O3': {
+        '-2': '[S]([O-])([O-])(=O)[S]',          # thiosulfate
+    },
+    'S2O8': {
+        '-2': '[S]([O-])(=O)(=O)[O][O][S]([O-])(=O)(=O)',  # peroxodisulfate
+    },
+    # ---- Nitrogen oxoanions ----
+    'NO3': {
+        '-': '[N+]([O-])(=O)=O',                  # nitrate
+    },
+    'NO2': {
+        '-': '[N+]([O-])=O',                      # nitrite
+    },
+    'N3': {
+        '-': '[N-]=[N+]=[N-]',                    # azide
+    },
+    # ---- Carbon oxoanions ----
+    'CO3': {
+        '-2': '[C]([O-])([O-])(=O)',             # carbonate
+        '-':  '[C](=O)([O-])([OH])',             # bicarbonate (HCO3-)
+    },
+    'C2O4': {
+        '-2': '[C](=O)([O-])[C](=O)([O-])',      # oxalate
+    },
+    'CN': {
+        '-': '[C]#[N-]',                         # cyanide
+    },
+    'OCN': {
+        '-': '[O][C]#[N-]',                      # cyanate
+    },
+    'SCN': {
+        '-': '[S][C]#[N-]',                      # thiocyanate
+    },
+    # ---- Phosphorus oxoanions ----
+    'PO4': {
+        '-3': '[P]([O-])([O-])([O-])(=O)',       # phosphate
+        '-2': '[P](=O)([O-])([O-])([OH])',       # monohydrogen phosphate (HPO4-2)
+        '-':  '[P](=O)([O-])([OH])([OH])',       # dihydrogen phosphate (H2PO4-)
+    },
+    'P2O7': {
+        '-4': '[P](=O)([O-])([O-])[O][P](=O)([O-])([O-])',  # pyrophosphate
+    },
+    # ---- Boron ----
+    'BO3': {
+        '-3': '[B]([O-])([O-])([O-])',           # borate
+    },
+    'B4O7': {
+        '-2': '[B](=O)([O-])[B]([O-])[B]([O-])[B](=O)([O-])',  # tetraborate (simplified)
+    },
+    # ---- Halogen oxoanions ----
+    'ClO': {
+        '-': '[Cl][O-]',                         # hypochlorite
+    },
+    'ClO2': {
+        '-': '[Cl]([O-])=O',                     # chlorite
+    },
+    'ClO3': {
+        '-': '[Cl]([O-])(=O)=O',                 # chlorate
+    },
+    'ClO4': {
+        '-': '[Cl]([O-])(=O)(=O)=O',             # perchlorate
+    },
+    'BrO3': {
+        '-': '[Br]([O-])(=O)=O',                 # bromate
+    },
+    'BrO4': {
+        '-': '[Br]([O-])(=O)(=O)=O',             # perbromate
+    },
+    'IO3': {
+        '-': '[I]([O-])(=O)=O',                  # iodate
+    },
+    'IO4': {
+        '-': '[I]([O-])(=O)(=O)=O',              # periodate
+    },
+    # ---- Manganese / Chrome / permanganate ----
+    'MnO4': {
+        '-':  '[Mn]([O-])(=O)(=O)=O',            # permanganate (Mn +VII)
+        '-2': '[Mn]([O-])(=O)(=O)([O-])',        # manganate (Mn +VI)
+    },
+    'CrO4': {
+        '-2': '[Cr]([O-])([O-])(=O)=O',          # chromate
+    },
+    'Cr2O7': {
+        '-2': '[Cr](=O)([O-])[O][Cr](=O)(=O)([O-])',  # dichromate
+    },
+    # ---- Organic acid anions (common names) ----
+    'CH3COO': {
+        '-': 'CC(=O)[O-]',                       # acetate
+    },
+    'C2H3O2': {
+        '-': 'CC(=O)[O-]',                       # acetate (IUPAC formula)
+    },
+    'AcO': {
+        '-': 'CC(=O)[O-]',                       # acetate (shorthand AcO-)
+    },
+    'HCOO': {
+        '-': '[C](=O)[O-]',                      # formate (HCOO-)
+    },
+    # ---- Silicate / aluminate ----
+    'SiO3': {
+        '-2': '[Si]([O-])([O-])(=O)',            # metasilicate
+    },
+    'AlO2': {
+        '-': '[Al]([O-])=O',                     # aluminate (meta)
+    },
+    # ---- Peroxides / superoxides ----
+    'O2': {
+        '-':  '[O-][O]',                         # superoxide (O2-.)
+        '-2': '[O-][O-]',                        # peroxide (O2-2)
+    },
+}

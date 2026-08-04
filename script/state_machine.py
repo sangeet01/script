@@ -83,6 +83,14 @@ class GenerativeStateMachine:
             elif chiral == '@@':
                 atom._initial_tag = 1
                 atom.stereo_type = StereoType.TETRAHEDRAL
+            elif chiral == '@a':
+                atom._initial_tag = 2
+                atom.stereo_type = StereoType.TETRAHEDRAL
+                atom._anomeric = 'a'
+            elif chiral == '@b':
+                atom._initial_tag = 1
+                atom.stereo_type = StereoType.TETRAHEDRAL
+                atom._anomeric = 'b'
             elif chiral == '@R':
                 # Sthiti (stable form): CIP-absolute R, frame-independent.
                 # Bypasses the Vak→CIP parity transform in the resolver —
@@ -429,7 +437,7 @@ class GenerativeStateMachine:
             self.add_bond(self.current_atom_idx, target_idx, 1, bond_class="bridge")
         else:
             bo = 4 if (is_resonant or bond_order == 4) else (1 if bond_order == -1 else bond_order)
-            self.add_bond(self.current_atom_idx, target_idx, bo)
+            self.add_bond(self.current_atom_idx, target_idx, bo, bond_class=bond_class)
 
         bond = self.mol.get_bond(self.current_atom_idx, target_idx)
         if bond:

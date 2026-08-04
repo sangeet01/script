@@ -12,7 +12,6 @@ Tests all materials science grammar extensions:
   T2.3: Modulation q-vectors [[xtal:P1;q:0.31,0,0]]
   T3:   Topological, 2D, grain boundaries, etc.
 
-Run: python /home/z/my-project/scripts/test_materials_v43.py
 """
 
 import sys

@@ -294,9 +294,16 @@ WILDCARD: "*"
 // [V4.3 T1.1] Defect atoms: [_:Fe] vacancy, [I:C] interstitial
 // =============================================================
 bracket_atom: "[" isotope? element chiral? hcount? charge? radical? ring_class? state_block? "]"
+            | "[" polyatomic_ion "]"               // [V4.6] Polyatomic shorthand [SO4-2], [NO3-], etc.
             | "[" "*" "]"           // Wildcard atom [*] — scaffold attachment, query atom
             | "[" query_atom "]"    // Query atom — SMARTS-style substructure patterns
             | "[" defect_type ":" element? state_block? "]"   // [V4.3 T1.1] Defect atom
+
+// [V4.6] Polyatomic ion shorthand — e.g. [SO4-2] expands to [S]([O-])([O-])(=O)(=O)
+// via the parser's _handle_bracket_atom, which looks up POLYATOMIC_IONS in mol.py.
+// This follows the same pattern as amino acid expansion in peptide.py: the registry
+// lives as reference data, the parser handles expansion through the state machine.
+polyatomic_ion: POLYATOMIC_FORMULA CHARGE_ATTR?
 
 // [V4.3 T1.1] Defect types for materials science
 //   [_:Fe]   — vacancy at Fe site (empty lattice position)
@@ -369,6 +376,8 @@ isotope: INT
 
 // Complete Stereochemistry Support (Anchored to DFS Vak Order)
 chiral: "@@"        // Tetrahedral S   (must precede "@" for longest match)
+      | "@a"        // Anomeric alpha (V3)
+      | "@b"        // Anomeric beta (V3)
       | "@R"        // Sthiti: CIP-absolute R (frame-independent)
       | "@S"        // Sthiti: CIP-absolute S (frame-independent)
       | "@r"        // Yatha-samkhya: pseudoasymmetric r (secondary)
@@ -443,17 +452,10 @@ bond: DATIVE             // Dative:         ->
 spline_explicit: "~{" ctrl_point (";" ctrl_point)* "}"
 ctrl_point: signed_num "," signed_num "," signed_num
 
-// hbond: STAR_BOND INT = haptic eta-n bond (explicit hapticity number required).
-// NOTE (fix): previously `hbond: STAR_BOND INT?` also allowed a bare STAR_BOND
-// with no following INT. Because STAR_BOND and WILDCARD both lex the literal
-// "*", a bare "*" was simultaneously a valid reduction as `hbond` (bare
-// resonant bond) and as `atom_expr` (wildcard atom) at the same grammar
-// position, causing the lexer to silently and unconditionally prefer
-// STAR_BOND — so a standalone wildcard atom `*` could never parse, even
-// though atom_expr explicitly allows WILDCARD. Requiring the hapticity INT
-// removes the ambiguous bare-STAR_BOND production; haptic bonds without an
-// explicit eta-n number had no well-defined chemical meaning regardless.
-hbond: STAR_BOND INT
+// hbond: STAR_BOND INT? = haptic eta-n bond when an integer follows, or a
+// bare resonance bond when no integer is present. The bare form is required
+// for chemistry such as C*C and C*C*C*C*C*C&6*.
+hbond: STAR_BOND INT?
 
 DATIVE: "->"
 REV_DATIVE: "<-"
@@ -494,7 +496,7 @@ local_ring: ring_closure
           | "%" DIGIT DIGIT    // Legacy: 10-99 atoms back
           | named_ring         // Legacy: [A], [B] polycycles
 
-ring_closure: "&" INT (anubandha | BRIDGE_BOND)?
+ring_closure: "&" INT (anubandha | BRIDGE_BOND)? hbond?
 anubandha: ":"   // Resonant / Aromatic  — &6: = 6-membered aromatic
 // [V4.4] &N<> closes a ring via a 3c-2e bridge bond, needed for cyclic
 // electron-deficient systems e.g. diborane's B-H-B-H four-membered ring.
@@ -663,6 +665,13 @@ LETTER: "A".."Z"
 // priority) picks e.g. "Ir" instead of "I" + "r".  Many transition metals
 // (Ir, Hf, Ta, Re, Os, Tc, Ru, Rh, Nb, Mo, ...) and lanthanides/actinides
 // were previously missing, causing "[Ir@SP]" to lex as "I" (iodine) + "r".
+//
+// [V4.6] POLYATOMIC_FORMULA must come BEFORE ATOM so that e.g. "SO4" is
+// lexed as a single polyatomic token, not "S" + "O" + "4".  Lark's
+// contextual lexer only offers POLYATOMIC_FORMULA inside bracket_atom
+// context, so "N3" in "CCN3CCC" (SMILES ring closure) is unaffected.
+POLYATOMIC_FORMULA: "CH3COO"|"C2H3O2"|"Cr2O7"|"S2O8"|"S2O3"|"MnO4"|"ClO4"|"ClO3"|"ClO2"|"BrO4"|"BrO3"|"IO4"|"IO3"|"SiO3"|"AlO2"|"B4O7"|"P2O7"|"C2O4"|"HCOO"|"SO4"|"SO3"|"NO3"|"NO2"|"PO4"|"BO3"|"CO3"|"ClO"|"AcO"|"OCN"|"SCN"|"CN"|"N3"|"O2"
+
 ATOM: "He"|"Li"|"Be"|"Ne"|"Na"|"Mg"|"Al"|"Si"|"Cl"|"Ar"|"Ca"|"Sc"|"Ti"|"Cr"|"Mn"|"Fe"|"Co"|"Ni"|"Cu"|"Zn"|"Ga"|"Ge"|"As"|"Se"|"Br"|"Kr"|"Rb"|"Sr"|"Zr"|"Nb"|"Mo"|"Tc"|"Ru"|"Rh"|"Pd"|"Ag"|"Cd"|"In"|"Sn"|"Sb"|"Te"|"Xe"|"Cs"|"Ba"|"La"|"Ce"|"Pr"|"Nd"|"Pm"|"Sm"|"Eu"|"Gd"|"Tb"|"Dy"|"Ho"|"Er"|"Tm"|"Yb"|"Lu"|"Hf"|"Ta"|"Re"|"Os"|"Ir"|"Pt"|"Au"|"Hg"|"Tl"|"Pb"|"Bi"|"Po"|"At"|"Rn"|"Fr"|"Ra"|"Ac"|"Th"|"Pa"|"Np"|"Pu"|"Am"|"Cm"|"Bk"|"Cf"|"Es"|"Fm"|"Md"|"No"|"Lr"|"Rf"|"Db"|"Sg"|"Bh"|"Hs"|"Mt"|"Ds"|"Rg"|"Cn"|"Nh"|"Fl"|"Mc"|"Lv"|"Ts"|"Og"
     | "C"|"N"|"O"|"F"|"P"|"S"|"K"|"V"|"I"|"W"|"U"|"Y"|"H"|"B"
 

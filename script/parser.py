@@ -222,6 +222,13 @@ class SCRIPTInterpreter(Interpreter):
                 self.visit(child)
                 self._next_bond_order = -1 
                 self._next_bond_dir = 0
+                self._next_translation = (0, 0, 0)
+                self._next_control_points = None
+                # Keep a semantic bond class on a ring label that appears
+                # between a bond and the following atom (for example
+                # `Fe>1C`). The first `1` registers the ring at Fe; `>` must
+                # still describe the Fe-C bond. A later bond token replaces
+                # this pending class before it can leak into another edge.
             elif data == 'branch':
                 count = self._get_multiplier(child) or 1
                 for _ in range(count):
@@ -287,6 +294,13 @@ class SCRIPTInterpreter(Interpreter):
         isolated-state loop entirely.)
 
         polymer_junction: "-b-" | "-alt-" | "-a-" | "-ran-" | "-stat-" | "-g-"
+
+        [V4.6] Graft copolymer expansion: when the junction is '-g-', the
+        parser delegates to _handle_graft_polymer_block which parses each
+        block into an isolated state and uses graft_expander.expand_graft_copolymer
+        to build a real branched atomic graph (backbone chain + pendant
+        grafts at branch points).  Non-graft junctions fall through to the
+        original shared-state mechanism.
         """
         from lark import Tree as LTree, Token as LToken
         from .mol import PolymerBlock
@@ -297,6 +311,23 @@ class SCRIPTInterpreter(Interpreter):
             'ran': 'random', 'r': 'random', 'stat': 'random', 'random': 'random',
             'g': 'graft', 'graft': 'graft',
         }
+
+        # Detect graft junctions BEFORE visiting any polymer child.
+        # If a graft junction is present, route to the dedicated handler
+        # so we can parse each block in isolation and expand into a real
+        # branched graph.
+        has_graft = False
+        for child in tree.children:
+            if not isinstance(child, LTree): continue
+            if child.data.lstrip('!') == 'polymer_junction':
+                raw_tokens = [str(t) for t in child.scan_values(lambda x: True)]
+                raw = raw_tokens[0].strip('-').lower() if raw_tokens else ''
+                if _KIND_MAP.get(raw, raw) == 'graft':
+                    has_graft = True
+                    break
+        if has_graft:
+            self._handle_graft_polymer_block(tree, _KIND_MAP)
+            return
 
         parent_mol = self.state.mol
         pending_kind = ''
@@ -343,6 +374,143 @@ class SCRIPTInterpreter(Interpreter):
                 if parent_mol.block_topology is None and pending_kind:
                     parent_mol.block_topology = pending_kind
                 pending_kind = ''  # consumed
+
+    def _handle_graft_polymer_block(self, tree, _KIND_MAP):
+        """[V4.6] Graft copolymer expansion.
+
+        For {[BB]}<n:N> -g- {[GG]}<n:M>:
+          1. Parse BB into the shared state (becomes the backbone unit
+             in the parent mol).
+          2. Parse GG into an ISOLATED state (separate CoreMolecule) so
+             it doesn't form a seam bond to the backbone tail.
+          3. Call graft_expander.expand_graft_copolymer(mol, bb_unit, N,
+             gr_unit, M) to replicate the backbone N times (chained) and
+             the graft M times (pendant at backbone branch points).
+
+        Block 0 (backbone) keeps block_kind=''.  Block 1 (graft) gets
+        block_kind='graft'.  parent_mol.block_topology='graft'.
+        """
+        from lark import Tree as LTree
+        from .mol import PolymerBlock
+        from .state_machine import GenerativeStateMachine
+        from .graft_expander import expand_graft_copolymer
+
+        parent_mol = self.state.mol
+        bb_unit_mol: Optional[CoreMolecule] = None
+        gr_unit_mol: Optional[CoreMolecule] = None
+        bb_repeat: Any = None
+        gr_repeat: Any = None
+        pending_kind = ''
+
+        # Walk children in order; parse backbone into shared state,
+        # parse graft into isolated state.
+        for child in tree.children:
+            if not isinstance(child, LTree): continue
+            node_data = child.data.lstrip('!')
+
+            if node_data == 'polymer_junction':
+                raw_tokens = [str(t) for t in child.scan_values(lambda x: True)]
+                raw = raw_tokens[0].strip('-').lower() if raw_tokens else ''
+                pending_kind = _KIND_MAP.get(raw, raw)
+                continue
+
+            if node_data != 'polymer':
+                continue
+
+            if pending_kind == '' and bb_unit_mol is None:
+                # Backbone: parse into shared state
+                bb_start = len(parent_mol.atoms)
+                self._next_bond_order = -1
+                self._next_bond_dir = 0
+                self._next_translation = (0, 0, 0)
+                self.visit(child)
+                bb_end = len(parent_mol.atoms) - 1
+                bb_repeat = parent_mol.repeat_count
+                parent_mol.repeat_count = None
+                # Snapshot the backbone unit (atoms in [bb_start, bb_end])
+                bb_unit_mol = CoreMolecule()
+                for atom in parent_mol.atoms[bb_start:bb_end + 1]:
+                    bb_unit_mol.add_atom(atom)  # note: shared refs (read-only use)
+                for bond in parent_mol.bonds:
+                    if bb_start <= bond.begin_atom_idx <= bb_end and \
+                       bb_start <= bond.end_atom_idx <= bb_end:
+                        # Remap to local indices in bb_unit_mol
+                        u = bond.begin_atom_idx - bb_start
+                        v = bond.end_atom_idx - bb_start
+                        bb_unit_mol.add_bond(u, v, bond.bond_type,
+                                             bond_dir=bond.bond_dir,
+                                             hapticity=bond.hapticity,
+                                             bond_class=bond.bond_class,
+                                             translation=bond.translation,
+                                             control_points=bond.control_points)
+                # Register backbone PolymerBlock metadata
+                parent_mol.polymer_blocks.append(PolymerBlock(
+                    unit=None, repeat_count=bb_repeat,
+                    block_kind='', atom_start=bb_start, atom_end=bb_end,
+                ))
+                parent_mol.block_topology = 'graft'  # tentative; confirmed below
+                pending_kind = ''
+            elif pending_kind == 'graft' and gr_unit_mol is None:
+                # Graft: parse into isolated state
+                saved_state = self.state
+                self.state = GenerativeStateMachine()
+                self._next_bond_order = -1
+                self._next_bond_dir = 0
+                self._next_translation = (0, 0, 0)
+                self.visit(child)
+                self.state.finalize_valences()
+                gr_unit_mol = self.state.mol
+                gr_repeat = gr_unit_mol.repeat_count
+                gr_unit_mol.repeat_count = None
+                self.state = saved_state
+                pending_kind = ''
+            else:
+                # Additional blocks beyond the first graft (multi-graft or
+                # backbone-then-graft-then-more): fall back to shared-state
+                # visit so we don't lose them silently.
+                self._next_bond_order = -1
+                self._next_bond_dir = 0
+                self._next_translation = (0, 0, 0)
+                atom_start = len(parent_mol.atoms)
+                self.visit(child)
+                atom_end = len(parent_mol.atoms) - 1
+                block_repeat = parent_mol.repeat_count
+                parent_mol.repeat_count = None
+                parent_mol.polymer_blocks.append(PolymerBlock(
+                    unit=None, repeat_count=block_repeat,
+                    block_kind=pending_kind,
+                    atom_start=atom_start, atom_end=atom_end,
+                ))
+                pending_kind = ''
+
+        if bb_unit_mol is None or gr_unit_mol is None:
+            return  # malformed; nothing to expand
+
+        # Now we need to:
+        # 1. Append the graft unit atoms to the parent mol (they were parsed
+        #    in isolation).  Record the new gr_start / gr_end indices.
+        # 2. Register a graft PolymerBlock.
+        # 3. Call expand_graft_copolymer which will:
+        #    - remove any seam bond between bb_end and gr_start (none here
+        #      since graft was parsed in isolation)
+        #    - replicate backbone N-1 more times
+        #    - replicate graft M-1 more times
+        #    - attach each graft copy to a backbone branch point
+        from .graft_expander import _copy_unit_into_parent
+
+        gr_start = len(parent_mol.atoms)
+        # Append the original graft unit atoms + internal bonds
+        index_map = _copy_unit_into_parent(parent_mol, gr_unit_mol)
+        gr_end = len(parent_mol.atoms) - 1
+
+        parent_mol.polymer_blocks.append(PolymerBlock(
+            unit=None, repeat_count=gr_repeat,
+            block_kind='graft', atom_start=gr_start, atom_end=gr_end,
+        ))
+
+        # Run the expansion
+        expand_graft_copolymer(parent_mol, bb_unit_mol, bb_repeat,
+                               gr_unit_mol, gr_repeat)
 
     def bond(self, tree):
         self._next_bond_order, self._next_bond_dir, self._next_hapticity, self._next_bond_class = self._get_bond_info(tree)
@@ -600,7 +768,8 @@ class SCRIPTInterpreter(Interpreter):
         return 0.0
 
     def hbond(self, tree):
-        # hbond = STAR_BOND INT  -> haptic bond with explicit hapticity number
+        # hbond = STAR_BOND INT? -> either a bare resonance bond or an eta-n
+        # haptic bond when an explicit integer is present.
         tokens = [t for t in tree.scan_values(lambda x: isinstance(x, Token))]
         hapticity = 0
         for tok in tokens:
@@ -638,13 +807,21 @@ class SCRIPTInterpreter(Interpreter):
         # Note: hapticity (eta-n) is now handled by hbond() directly.
         # [V4.2 Q5] Handle spline_explicit as a child Tree of bond
         from lark import Tree as LarkTree
-        for child in bond_node.children:
+        # `maybe_periodic_bond` receives the anonymous `>` terminal directly
+        # for syntax such as `Fe>1C`, while ordinary molecular bonds arrive as
+        # a `bond` tree. Normalize both shapes before inspecting tokens.
+        if isinstance(bond_node, Token):
+            tokens = [bond_node]
+        else:
+            tokens = None
+        for child in getattr(bond_node, 'children', ()):
             if isinstance(child, LarkTree) and child.data.lstrip('!') == 'spline_explicit':
                 # Spline with explicit control points — dispatch to handler
                 self.spline_explicit(child)
                 return self._next_bond_order, 0, 0, self._next_bond_class
 
-        tokens = [t for t in bond_node.scan_values(lambda x: isinstance(x, Token))]
+        if tokens is None:
+            tokens = [t for t in bond_node.scan_values(lambda x: isinstance(x, Token))]
         if not tokens: return 1, 0, 0, ""
 
         t_type = tokens[0].type
@@ -760,6 +937,17 @@ class SCRIPTInterpreter(Interpreter):
                     element = query_data.get('symbol', '*')
                     break
 
+        # [V4.6] Detect [polyatomic_ion] form — e.g. [SO4-2], [NO3-], [PO4-3]
+        # Looks up the expansion in mol.POLYATOMIC_IONS and recursively parses
+        # the expansion SCRIPT string, transferring atoms/bonds into the
+        # current state machine (same pattern as peptide.py's amino acid
+        # expansion).  No regex preprocessor — grammar-driven, Sandhi-validated.
+        if not is_wildcard and not is_query:
+            for child in node.children:
+                if isinstance(child, Tree) and child.data.lstrip('!') == 'polyatomic_ion':
+                    self._handle_polyatomic_ion(child)
+                    return
+
         beam_radius = None  # [V4.2] always defined; extracted below if state_block present
 
         if not is_wildcard and not is_query:
@@ -823,6 +1011,180 @@ class SCRIPTInterpreter(Interpreter):
         if len(result['query_atomic_nums']) == 1:
             result['symbol'] = ATOMIC_NUM_TO_SYMBOL.get(result['query_atomic_nums'][0], '*')
         return result
+
+    def _handle_polyatomic_ion(self, node):
+        """[V4.6] Expand a polyatomic ion shorthand like [SO4-2] into full
+        bond notation via the grammar + state machine.
+
+        Follows the same pattern as peptide.py's amino acid expansion:
+          1. Extract the formula (e.g. "SO4") and charge (e.g. "-2")
+          2. Look up the expansion SCRIPT string in mol.POLYATOMIC_IONS
+          3. Recursively parse the expansion into a separate CoreMolecule
+          4. Transfer atoms/bonds into the current state machine
+
+        This is grammar-driven and Sandhi-validated — no regex preprocessor.
+        """
+        from .mol import POLYATOMIC_IONS, CoreBond
+
+        formula = None
+        charge_str = ''
+        for child in node.children:
+            if isinstance(child, Token):
+                if child.type == 'POLYATOMIC_FORMULA':
+                    formula = str(child)
+                elif child.type == 'CHARGE_ATTR':
+                    charge_str = str(child)
+
+        if formula is None:
+            return
+
+        # Normalise charge string to match registry keys
+        # Registry uses: '-', '--', '-3', '+', '++', '+3'
+        if charge_str:
+            # Convert e.g. '-2' -> '-2', '--' -> '--', '2-' -> '-2'
+            s = charge_str.strip()
+            if set(s) == {'-'}:
+                charge_canon = '-' * len(s) if len(s) <= 2 else f'-{len(s)}'
+            elif set(s) == {'+'}:
+                charge_canon = '+' * len(s) if len(s) <= 2 else f'+{len(s)}'
+            elif s[0].isdigit():
+                # e.g. "2-" -> "-2"
+                charge_canon = s[-1] + s[:-1]
+            else:
+                charge_canon = s
+        else:
+            charge_canon = ''
+
+        # Look up expansion
+        ion_variants = POLYATOMIC_IONS.get(formula)
+        if ion_variants is None:
+            # Try uppercase (for case-insensitive formulas like SIO3 vs SiO3)
+            ion_variants = POLYATOMIC_IONS.get(formula.upper())
+        if ion_variants is None:
+            return
+
+        expansion = ion_variants.get(charge_canon)
+        if expansion is None and charge_canon:
+            # Try alternative charge formats
+            alts = []
+            if charge_canon == '-':
+                alts = ['1-', '-1']
+            elif charge_canon == '--':
+                alts = ['2-', '-2']
+            elif charge_canon == '-3':
+                alts = ['3-', '---']
+            elif charge_canon == '+':
+                alts = ['1+', '+1']
+            elif charge_canon == '++':
+                alts = ['2+', '+2']
+            elif charge_canon == '+3':
+                alts = ['3+', '+++']
+            elif charge_canon.startswith('-') and len(charge_canon) > 1 and charge_canon[1:].isdigit():
+                n = int(charge_canon[1:])
+                alts = ['-' * n, f'{n}-']
+            elif charge_canon.startswith('+') and len(charge_canon) > 1 and charge_canon[1:].isdigit():
+                n = int(charge_canon[1:])
+                alts = ['+' * n, f'{n}+']
+            for alt in alts:
+                if alt in ion_variants:
+                    expansion = ion_variants[alt]
+                    break
+
+        if expansion is None:
+            return
+
+        # Recursively parse the expansion SCRIPT string into a separate
+        # CoreMolecule (same pattern as peptide.py's _add_monomer_script).
+        # We use a CLASS-LEVEL parser instance to avoid Lark's Interpreter
+        # __getattr__ which returns self.__default__ for any attribute name,
+        # making hasattr() always return True.
+        if not hasattr(SCRIPTInterpreter, '_shared_poly_parser'):
+            import script.parser as _sp_module
+            SCRIPTInterpreter._shared_poly_parser = _sp_module.SCRIPTParser()
+        try:
+            result = SCRIPTInterpreter._shared_poly_parser.parse(expansion)
+            if not result.get("success") or result.get("molecule") is None:
+                return
+            core = result["molecule"]
+            if not hasattr(core, 'atoms') or not hasattr(core, 'bonds'):
+                return
+        except Exception:
+            return
+
+        # Transfer atoms/bonds into the current state machine.
+        # The first atom of the expansion becomes the "current atom" — it
+        # inherits the bond to the previous atom (via _next_bond_order).
+        offset = len(self.state.mol.atoms)
+        saved_bond_order = self._next_bond_order
+        saved_bond_dir = self._next_bond_dir
+        saved_bond_class = self._next_bond_class
+        saved_translation = self._next_translation
+        saved_control_points = self._next_control_points
+
+        for i, atom in enumerate(core.atoms):
+            from .mol import CoreAtom
+            new_atom = CoreAtom(
+                atomic_num=atom.atomic_num,
+                formal_charge=atom.formal_charge,
+                isotope=atom.isotope,
+                radical_electrons=atom.radical_electrons,
+                symbol=atom.symbol,
+                is_aromatic=atom.is_aromatic,
+                mapping=atom.mapping,
+                occupancy=atom.occupancy,
+                spin=atom.spin,
+                is_excited=atom.is_excited,
+                is_wildcard=atom.is_wildcard,
+                beam_radius=atom.beam_radius,
+            )
+            new_atom.implicit_hs = atom.implicit_hs
+            new_atom._initial_tag = atom._initial_tag
+            new_atom._initial_nbrs = list(atom._initial_nbrs)
+            new_atom.chirality = atom.chirality
+            new_atom.stereo_type = atom.stereo_type
+            new_atom.stereo_neighbors = list(atom.stereo_neighbors)
+            # First atom: use the pending bond order/direction (connects to previous atom)
+            if i == 0:
+                self.state.add_atom(
+                    new_atom.symbol,
+                    charge=new_atom.formal_charge,
+                    isotope=new_atom.isotope,
+                    hcount=new_atom.implicit_hs if new_atom.implicit_hs > 0 else None,
+                    bond_order=saved_bond_order,
+                    bond_dir=saved_bond_dir,
+                    bond_class=saved_bond_class,
+                    is_bracket=True,
+                    translation=saved_translation,
+                    control_points=saved_control_points,
+                )
+                # Copy over additional properties that add_atom doesn't set
+                idx = len(self.state.mol.atoms) - 1
+                self.state.mol.atoms[idx].radical_electrons = new_atom.radical_electrons
+                self.state.mol.atoms[idx].is_aromatic = new_atom.is_aromatic
+            else:
+                # Subsequent atoms: no implicit bond (they're connected via explicit bonds below)
+                self.state.mol.add_atom(new_atom)
+
+        # Transfer bonds (with offset)
+        for bond in core.bonds:
+            new_bond = CoreBond(
+                bond.begin_atom_idx + offset,
+                bond.end_atom_idx + offset,
+                bond.bond_type,
+                bond_dir=bond.bond_dir,
+                hapticity=bond.hapticity,
+                bond_class=bond.bond_class,
+                translation=bond.translation,
+                control_points=bond.control_points,
+            )
+            self.state.mol.add_bond_obj(new_bond)
+
+        # Reset pending bond state (consumed by the first atom)
+        self._next_bond_order = -1
+        self._next_bond_dir = 0
+        self._next_bond_class = ""
+        self._next_translation = (0, 0, 0)
+        self._next_control_points = None
 
     def _parse_query_primitives(self, tree, result: dict):
         """Recursively extract query primitives."""
@@ -1128,12 +1490,20 @@ class SCRIPTInterpreter(Interpreter):
             # extraction above and detected here independently.
             is_bridge = "<>" in tokens
 
+            # Process any embedded hbond child inside ring_closure so trailing
+            # STAR_BOND tokens like &6* are handled correctly.
+            for child in node.children:
+                if isinstance(child, Tree) and child.data.lstrip('!') == 'hbond':
+                    self.visit(child)
+
             if is_bridge:
                 self.state.add_v2_ring(ring_size, is_resonant=False,
                                        bond_order=self._next_bond_order,
                                        bond_class="bridge")
             else:
-                self.state.add_v2_ring(ring_size, is_resonant, bond_order=self._next_bond_order)
+                self.state.add_v2_ring(ring_size, is_resonant,
+                                       bond_order=self._next_bond_order,
+                                       bond_class=self._next_bond_class)
             return
 
         # Look for named ring or digits (Legacy)

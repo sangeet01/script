@@ -8,6 +8,7 @@ Tests all 5 domains from remaining.md:
   5. Surface & Interface Chemistry  (Adhikarana)
 """
 import os
+import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from script.parser import SCRIPTParser
@@ -116,7 +117,7 @@ def test_v3():
     check("Mapped reaction", "[C:1]>>[C:1]")
     check("Salt", "[Na+].[Cl-]")
     check("Haptic bond eta-5", "[Fe]*5CCCCC")
-    check("Bare star bond (deprecated V4.4)", "C*C", expect_success=False)
+    check("Bare star resonance bond (V4.4)", "C*C", expect_success=True)
 
     print()
     print("=" * 60)

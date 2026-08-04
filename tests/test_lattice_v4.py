@@ -11,8 +11,6 @@ for the four canonical LEAP71 worked examples:
   4. Post-processed lattice infill with OverOffset + Intersect
 
 Plus edge cases: namespaces, beam radius, no-thickness fallback, etc.
-
-Run: python /home/z/my-project/scripts/test_lattice_v4.py
 """
 
 import sys
