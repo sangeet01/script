@@ -1,0 +1,43 @@
+{
+  "head_to_head": {
+    "delta_pct": -1.11,
+    "rdkit_exact_pct": 100.0,
+    "script_beats_rdkit": false,
+    "script_exact_pct": 98.89
+  },
+  "manifest": "experiments/data/chembl_pilot_v1.tsv",
+  "manifest_sha256": "7ca66958376f6497cb54b2153fb27673d31375cec191100e716e451578bb38cf",
+  "rdkit_baseline_arm": {
+    "canonical_idempotent": 10000,
+    "canonical_idempotent_pct": 100.0,
+    "exact_roundtrip": 10000,
+    "exact_roundtrip_pct": 100.0,
+    "failure_stages": {
+      "pass": 10000
+    },
+    "inchi_layer_diffs": {},
+    "records": 10000,
+    "result_file": "experiments/results/chembl_pilot_v1_rdkit_baseline.jsonl",
+    "top_failure_reasons": {}
+  },
+  "rdkit_version": "2026.03.5",
+  "script_arm": {
+    "canonical_idempotent": 9410,
+    "canonical_idempotent_pct": 94.1,
+    "exact_roundtrip": 9889,
+    "exact_roundtrip_pct": 98.89,
+    "failure_stages": {
+      "decode": 26,
+      "fidelity": 85,
+      "pass": 9889
+    },
+    "inchi_layer_diffs": {},
+    "records": 10000,
+    "result_file": "experiments/results/chembl_pilot_v1_script.jsonl",
+    "top_failure_reasons": {
+      "isomeric_smiles_mismatch": 85,
+      "script_decoding_none": 26
+    }
+  },
+  "script_commit": "b60578d089389c64b5915f84a72a9507475b5592"
+}
