@@ -10,6 +10,10 @@ SCRIPT: Structural Chemical Representation In Plain Text
 
 Not approximately one. One.
 
+### Design Philosophy
+
+SCRIPT is **grammar-based**, not graph-based. Where SMILES describes a molecular graph that an external toolkit must validate and canonicalize, SCRIPT's grammar *is* the chemistry: valence rules are encoded as Sandhi (junction) constraints in the LALR parser itself, so invalid structures are rejected at parse time, not after construction. This is not "SMILES with strict typesetting" — the typed `BondType` enum (11 values: SINGLE, DOUBLE, TRIPLE, AROMATIC, DATIVE, REV_DATIVE, TAUTOMERIC, COORDINATE, STAR, SPLINE, BRIDGE), the CIP-absolute `@R`/`@S` stereo resolution, and the LQG periodic-graph encoding are formalism extensions that SMILES structurally cannot express. The syntax is intentionally SMILES-derived for the organic subset (interoperability), but the underlying formalism is a generative grammar with Sandhi-time validation, extended to domains SMILES cannot reach: periodic crystals, polymers, surfaces, and quantum states.
+
 ### Quick Start
 
 ```bash
@@ -235,20 +239,30 @@ print(atom.query_not)          # False
 
 ## Benchmark Results
 
-| Test suite | Result |
-|---|---|
-| 10-compound drug benchmark (round-trip InChI) | **10/10** |
-| Tier 1 — typed IR features | **14/14** |
-| Tier 2 — semantic metadata | **12/12** |
-| Tier 3 — query atoms, biopolymers, allenes | **13/13** |
-| V3 materials tests | **22/22** |
+
+SCRIPT has been benchmarked at scale on 10,000 stratified ChEMBL molecules, head-to-head against RDKit's canonical SMILES on the same set.
+
+| Metric | SCRIPT | RDKit baseline |
+|---|---|---|
+| Exact round-trip (InChIKey match) | **9,889 / 10,000 (98.89%)** | 10,000 / 10,000 (100%) |
+| Canonical idempotent (re-encode ≡ encode) | **9,410 / 10,000 (94.10%)** | 10,000 / 10,000 (100%) |
+| Delta vs RDKit | −1.11 percentage points | — |
+
+The benchmark uses a stratified sample across 24 strata (molecular weight × stereochemistry × charge × metal content) drawn from ChEMBL 37 (2.9M molecules). Full methodology, failure taxonomy, and the 111 categorized failures are in [`tests/experiment/`](tests/experiment/) — the experiment is reproducible via the included Kaggle notebook.
+
+The 111 SCRIPT failures break down as:
+- 26 decode failures on complex polycyclic systems with bridge bonds and charged heteroatoms (0.26%)
+- ~27 tetrahedral stereo inversions in ring-containing systems (0.26%)
+- ~30 E/Z double-bond stereo losses, predominantly C=N in heterocycles (0.30%)
+- ~20 aromaticity/charge rearrangements on charged main-group complexes like BODIPY dyes (0.20%)
+- ~9 miscellaneous
+
+Unit-test coverage: 275 passing tests (0 skipped, 0 failed), with mutation coverage measured at 100% on the canonicalizer and 60% on the graft copolymer expander.
 
 ```bash
-python benchmark.py
-# Round-trip: 10/10
+python -m pytest tests/                    # 275 passed, 0 failed
+python benchmark.py                         # 10/10 drug round-trip
 ```
-
-The 10-compound benchmark covers Aspirin, Metformin, Ciprofloxacin·HCl, Nifedipine (nitro group + charged atoms), Ibuprofen, Captopril (proline ring), Glucose (4 stereocenters), Metformin·HCl (salt), Magnesium stearate (metal + multi-fragment), and PVP — chosen to stress-test salts, stereocenters, ring closures, metals, and ionic species simultaneously.
 
 ---
 
@@ -355,12 +369,20 @@ script/
 │   ├── materials_polymers_states.md
 │   └── reactions_salts_radicals.md
 ├── tests/
-│   ├── test_parser.py
-│   └── test_rdkit_integration.py
+│   ├── test_parser.py / test_grammargaps.py / test_v46_gaps.py   # 275 unit tests
+│   ├── test_stereo_correctness.py / test_periodic.py / test_bridge_bonds.py
+│   ├── mutation_test_canon.py / mutation_test_graft.py           # Mutation testing (100% / 60% coverage)
+│   ├── test_advanced_features.py / test_auto_detection.py
+│   └── experiment/                       # Large-scale ChEMBL benchmark
+│       ├── chembl-script.ipynb           # Kaggle notebook with real run outputs
+│       ├── kaggle_notebook_cells.py      # Source cells
+│       ├── script_failures.csv           # All 111 categorized failures
+│       └── results/                      # 10K molecule JSONL results (SCRIPT + RDKit baseline)
+├── pubchem_benchmark.py        # Alternative PubChem benchmark (with checkpointing)
 ├── examples/
 │   ├── basic_usage.py
 │   └── rdkit_demo.py
-├── benchmark.py
+├── benchmark.py                # 10-drug round-trip benchmark
 └── LICENSE
 ```
 
@@ -433,11 +455,22 @@ To prove that topological back-counting scales to real complexity:
 
 ## Known Limitations
 
-- **Block copolymer atomic expansion** — diblock, triblock, alternating, and statistical junction notation (`{[CC]}<n:50>-b-{[CCCO]}<n:100>`) parses and expands fully into a single connected molecular graph, with real junction bonds between blocks. Full expansion for graft copolymers with branch-point topology is not yet implemented.
+
+The 10,000-molecule ChEMBL benchmark (98.89% round-trip fidelity, see above) revealed four classes of failure, documented here as known limitations with fix roadmaps:
+
+- **E/Z stereo on C=N bonds** (~30 cases / 0.30%) — `SCRIPTFromMol` does not preserve bond direction markers on all double bonds. Fix: targeted patch in the RDKit bridge (estimated 2-3 days).
+- **Tetrahedral stereo inversion in rings** (~27 cases / 0.26%) — CIP-absolute parity computation produces wrong `@R`/`@S` for ring stereocenters in specific topologies. Fix: `_reconcile_stereochemistry_cip` patch (estimated 1 week).
+- **Charged main-group aromaticity** (~20 cases / 0.20%) — BODIPY dyes, charged sulfoxides, tellurophenes. SCRIPT's Kekule-free aromaticity model disagrees with RDKit's kekulization. This is partly a fundamental disagreement (both forms are chemically valid) rather than a bug.
+- **Polycyclic decode failures** (26 cases / 0.26%) — `&N<>` bridge ring closures + nested aromatic rings + charged heteroatoms can produce strings that the LALR(1) parser cannot re-parse. Fix: grammar disambiguation (estimated 1-2 weeks).
+
+Grammar-level limitations (by design or scope):
+
 - **SMARTS-SCRIPT** — the query atom grammar covers `[#6]`, `[R]`, `[!N]`, `[v3]`, `[a]`, `[A]`. The full SMARTS feature set (`[$(...)],` recursive SMARTS, etc.) is out of scope for a representation standard; use RDKit SMARTS for that.
 - **Periodic structure reconstruction** — SCRIPT V3.6/V3.7 canonically encodes crystal and MOF connectivity via cross-cell bonds with lattice translation vectors (`Fe-@1,0,0Fe`) and unit cell parameters (`[[Rutile;4.593,4.593,2.959,90,90,90]]`), with Morgan-Weisfeiler-Lehman ranking extended to periodic graphs. Full symmetry-operation and space-group reconstruction (i.e. generating a complete CIF file from a SCRIPT string) is not implemented — SCRIPT is a notation language, not a crystallographic file format.
+- **Space group coverage** — 15 of 230 space groups are hand-coded; full coverage requires integration with `spglib` (planned).
 
-Resolved since the last major release: allenic stereo (Ra/Sa handedness now assigned automatically from 3D conformers), block copolymer connectivity (see above), and periodic topology (LQG-compliant canonical encoding of crystal nets, addressing an open problem identified in the SELFIES 2022 roadmap paper).
+Resolved since the last major release: graft copolymer atomic expansion (now grammar-driven), polyatomic ion shorthand (now grammar-driven via `POLYATOMIC_FORMULA` terminal), allenic stereo, block copolymer connectivity, periodic topology (LQG-compliant canonical encoding of crystal nets, addressing an open problem identified in the SELFIES 2022 roadmap paper).
+
 
 ---
 
