@@ -67,7 +67,7 @@ def _copy_unit_into_parent(parent: CoreMolecule,
             isotope=atom.isotope,
             radical_electrons=atom.radical_electrons,
             symbol=atom.symbol,
-            is_aromatic=atom.is_aromatic,
+            
             mapping=atom.mapping,
             occupancy=atom.occupancy,
             spin=atom.spin,

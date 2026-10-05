@@ -4,21 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linearscript"
-version = "3.0.0"
+version = "4.0.0"
 description = "SCRIPT V3: A deterministic molecular notation for AI and Materials Science, featuring support for alloys, crystallography, and electronic states."
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "MIT License with Commons Clause (non-commercial use only; see LICENSE)"}
 authors = [
-    {name = "SCRIPT Development Team", email = "65709147+sangeet01@users.noreply.github.com"}
+    {name = "Sangeet Sharma", email = "65709147+sangeet01@users.noreply.github.com"}
 ]
 maintainers = [
-    {name = "SCRIPT Development Team", email = "65709147+sangeet01@users.noreply.github.com"}
+    {name = "Sangeet Sharma", email = "65709147+sangeet01@users.noreply.github.com"}
 ]
 keywords = ["chemistry", "cheminformatics", "materials-science", "alloys", "crystallography", "smiles", "molecular-notation"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",

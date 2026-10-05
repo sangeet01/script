@@ -76,5 +76,5 @@ def get_constrained_decoder():
     from .constrained_decoder import ConstrainedSCRIPTDecoder
     return ConstrainedSCRIPTDecoder
 
-__version__ = "3.0.0"
-__author__ = "SCRIPT Development Team"
+__version__ = "4.0.0"
+__author__ = "Sangeet Sharma"

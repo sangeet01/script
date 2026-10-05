@@ -32,10 +32,21 @@ def calculate_ranks(mol) -> Dict[int, int]:
     rank_map = _calculate_ranks_uncached(mol)
 
     # Store back on the instance if the cache slot is available.
+    # NOTE: we intentionally do NOT cache when mol has been unpickled from
+    # another process: hash() randomises per-process (PYTHONHASHSEED), so a
+    # cache populated in process A is invalid in process B.  We detect this by
+    # checking _rank_cache_pid.  On a pid mismatch the cache is rebuilt.
     if cache_version is not None:
+        import os as _os
         try:
+            current_pid = _os.getpid()
+            cached_pid = getattr(mol, '_rank_cache_pid', None)
+            if cached_pid != current_pid:
+                # Different process (or first write) -- clear any stale entry
+                mol._rank_cache = None
             mol._rank_cache = rank_map
             mol._rank_cache_version = cache_version
+            mol._rank_cache_pid = current_pid
         except (AttributeError, TypeError):
             pass
 
@@ -115,9 +126,12 @@ def _get_bond_order(bt) -> int:
     v = getattr(bt, "value", None)
     if isinstance(v, int):
         # script.mol.BondType values: SINGLE=1, DOUBLE=2, TRIPLE=3, AROMATIC=4,
-        # DATIVE=5, REV_DATIVE=6, TAUTOMERIC=7, COORDINATE=8, STAR=9.
-        # All non-aromatic typed bonds collapse to "other" (0) for ranking
-        # purposes, matching the original substring-based semantics.
+        # script.mol.BondType values (all 11):
+        #   SINGLE=1, DOUBLE=2, TRIPLE=3, AROMATIC=4,
+        #   DATIVE=5, REV_DATIVE=6, TAUTOMERIC=7, COORDINATE=8, STAR=9,
+        #   SPLINE=10, BRIDGE=11.
+        # Only SINGLE/DOUBLE/TRIPLE/AROMATIC carry chemical order
+        # information relevant to ranking; the rest collapse to 0 (other).
         if v in (1, 2, 3, 4):
             return v
         if v == 10:   # SPLINE [V4 L1]

@@ -7,8 +7,10 @@ from pathlib import Path
 
 # SCRIPT Grammar in Lark EBNF format
 SCRIPT_GRAMMAR = '''
-// SCRIPT.lark - Complete grammar for SCRIPT notation
-// Based on SCRIPT specification v1.0
+// SCRIPT.lark - Stub grammar for grammar.py module
+// WARNING: this is NOT the production grammar.
+// The production grammar is grammar.lark (33KB).
+// Based on SCRIPT specification v1.0 (organic subset only)
 
 %import common (WS, NUMBER, SIGNED_NUMBER)
 %ignore WS
@@ -94,14 +96,23 @@ def get_grammar() -> str:
     return SCRIPT_GRAMMAR
 
 def save_grammar_file(filepath: str = None) -> str:
-    """Save grammar to file and return path"""
+    """Save the stub grammar to a file and return the path.
+
+    WARNING: never call without an explicit filepath.  The default (None)
+    would write next to this module -- potentially overwriting grammar.lark,
+    the 33 KB production grammar.  Pass an explicit path such as a temp dir.
+    """
     if filepath is None:
-        # Save next to this module
-        filepath = Path(__file__).parent / "grammar.lark"
-    
+        raise ValueError(
+            "save_grammar_file() requires an explicit filepath.  "
+            "Calling without one risks overwriting grammar.lark, the "
+            "production LALR grammar.  Pass a safe destination, e.g. "
+            "a temporary directory."
+        )
+
     with open(filepath, 'w') as f:
         f.write(SCRIPT_GRAMMAR)
-    
+
     return str(filepath)
 
 def load_grammar_from_file(filepath: str = None) -> str:
@@ -138,9 +149,9 @@ def test_grammar():
         for case in test_cases:
             try:
                 tree = parser.parse(case)
-                results[case] = "✓ OK"
+                results[case] = "OK"
             except Exception as e:
-                results[case] = f"✗ {str(e)}"
+                results[case] = "FAIL: " + str(e)
         
         return results
     
@@ -153,7 +164,7 @@ if __name__ == "__main__":
     results = test_grammar()
     
     for case, result in results.items():
-        print(f"  {case:12} → {result}")
+        print("  {:12} -> {}".format(case, result))
     
     # Save grammar file
     grammar_path = save_grammar_file()

@@ -3,6 +3,9 @@ from .mol import CoreMolecule, BondType, StereoType
 from .ranking import calculate_ranks
 from .stereo import get_chiral_symbol, perceive_chirality
 import math
+import re as _re
+import warnings
+from collections import deque
 
 
 def _lattice_vectors_to_params(
@@ -259,10 +262,10 @@ class SCRIPTCanonicalizer:
             if start in visited:
                 continue
             component = []
-            queue = [start]
+            queue = deque([start])
             visited.add(start)
             while queue:
-                node = queue.pop(0)
+                node = queue.popleft()
                 component.append(node)
                 for nbr, bond_idx in mol.adj.get(node, []):
                     # For periodic bonds, only cross the boundary once.
@@ -315,7 +318,6 @@ class SCRIPTCanonicalizer:
         # depends only on graph structure, not stereo). If the stripped
         # strings are identical (symmetric molecule), pick the lowest-index
         # root as a deterministic tie-breaker.
-        import re as _re
         canonical_forms = []
         for start_atom in start_candidates:
             canon = self._canonicalize_component_from_root(mol, atom_indices, start_atom, ranks)
@@ -530,11 +532,17 @@ class SCRIPTCanonicalizer:
                 depths[nbr_idx] = curr_depth + 1
                 parts.append(self._dfs(mol, nbr_idx, atom_to_id, ranks, bond_idx, ring_counter, ring_bonds_set, depths))
             else:
-                # If the "main chain" edge was already visited via a branch, 
-                # we might need to convert one of the previous branches to the main chain.
-                # But for canonicality, if the last edge is gone, we just end the string or find the last sibling that wasn't visited.
-                # Actually, the simplest way is to ensure parts is joined correctly.
-                pass
+                # Invariant: once sorted DFS tree edges are processed in
+                # rank order, the last edge's neighbour should never have been
+                # visited already (that would imply a cycle, which belongs in
+                # ring_bonds_set). If this branch is hit, ring detection missed
+                # a back edge -- log a warning rather than silently dropping it.
+                warnings.warn(
+                    "Canonicalizer: last tree edge to already-visited atom "
+                    f"(atom {nbr_idx}); ring detection may have missed a cycle.",
+                    RuntimeWarning,
+                    stacklevel=4,
+                )
         
         return "".join(parts)
 

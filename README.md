@@ -62,8 +62,8 @@ SCRIPT addresses all of these — not with patches, but at the grammar level:
 | Polymers | Not supported | Stochastic chains `{[CC]}n` |
 | Nucleic acids | Not supported | `{dA.m5C.dG.dT}` with 14 modification codes |
 | Query atoms | Not supported | `[#6]`, `[R]`, `[!N]`, `[v3]` |
-| Typed bonds | Integer order only | `BondType` enum (SINGLE→STAR, 9 values) |
-| Stereochemistry types | Tetrahedral only | `@SP`, `@OH`, `@AX`, `@TB`, `@PY` |
+| Typed bonds | Integer order only | `BondType` enum (SINGLE->BRIDGE, 11 values) |
+| Stereochemistry types | Tetrahedral only | `@SP`, `@OH`, `@AX`, `@TB`, `@PY`, `@PL` |
 
 ---
 
@@ -113,7 +113,7 @@ SCRIPT: O[C@H]([C@@H]([C@H]([C@@H](C&6-O)O)O)O)CO
 # All four centers survive round-trip through CoreMolecule and back
 ```
 
-Extended stereo types are first-class: `@SP` (square planar), `@OH` (octahedral), `@AX` (axial/allenic), `@TB` (trigonal bipyramidal), `@PY` (pyramidal).
+Extended stereo types are first-class: `@SP` (square planar), `@OH` (octahedral), `@AX` (axial/allenic), `@TB` (trigonal bipyramidal), `@PY` (pyramidal), `@PL` (planar chirality, e.g. metallocenes and ferrocenes).
 
 ### 5. Typed IR — `BondType` and `StereoType` Enums
 
@@ -134,7 +134,7 @@ StereoType.ATROPISOMER      # @AX  (allenes, biaryls)
 
 ### 6. RDKit-Independent Core
 
-The parser, canonicalizer, state machine, and IR have zero non-Lark dependencies. RDKit is an optional bridge for interop, not a foundation.
+The parser, canonicalizer, state machine, and IR import only Lark. The installed package also requires `click` and `rich`, used solely by the CLI and visualizer -- no chemistry logic depends on them. RDKit is an optional bridge for interop, not a foundation.
 
 ---
 
@@ -356,9 +356,17 @@ script/
 │   ├── cip.py                 # CIP priority calculator
 │   ├── state_machine.py       # Sandhi validation (generative)
 │   ├── grammar.lark           # SCRIPT V3 LALR grammar
+│   ├── grammar.py             # Grammar loader
 │   ├── ranking.py             # Morgan invariant ranking
 │   ├── local_rings.py         # Topological ring resolution
 │   ├── peptide.py             # Biopolymer handler (AA + PTM + nucleotides + mods)
+│   ├── stereo.py              # Stereo perception helpers
+│   ├── graft_expander.py      # Graft copolymer expansion
+│   ├── validator.py           # SCRIPT validity checker
+│   ├── constrained_decoder.py # Grammar-state-aware decoder for ML generation
+│   ├── cli.py                 # `scr` command-line interface
+│   ├── visualizer.py          # Depiction (requires RDKit)
+│   ├── writer.py              # String writer utilities
 │   └── rdkit_bridge.py        # Optional RDKit interop
 ├── docs/
 │   ├── SPEC.md                # Complete SCRIPT specification
@@ -369,7 +377,7 @@ script/
 │   ├── materials_polymers_states.md
 │   └── reactions_salts_radicals.md
 ├── tests/
-│   ├── test_parser.py / test_grammargaps.py / test_v46_gaps.py   # 275 unit tests
+│   ├── test_parser.py / test_grammargaps.py / test_lattice_v4.py  # 275 unit tests (29 files)
 │   ├── test_stereo_correctness.py / test_periodic.py / test_bridge_bonds.py
 │   ├── mutation_test_canon.py / mutation_test_graft.py           # Mutation testing (100% / 60% coverage)
 │   ├── test_advanced_features.py / test_auto_detection.py
@@ -378,9 +386,10 @@ script/
 │       ├── kaggle_notebook_cells.py      # Source cells
 │       ├── script_failures.csv           # All 111 categorized failures
 │       └── results/                      # 10K molecule JSONL results (SCRIPT + RDKit baseline)
-├── pubchem_benchmark.py        # Alternative PubChem benchmark (with checkpointing)
+├── GRAMMAR.md                  # Human-readable grammar reference
 ├── examples/
 │   ├── basic_usage.py
+│   ├── constrained_generation_demo.py
 │   └── rdkit_demo.py
 ├── benchmark.py                # 10-drug round-trip benchmark
 └── LICENSE
@@ -425,7 +434,7 @@ The key grammar properties:
 | Hand-writable | Yes | No | No | Yes |
 | Invalid-proof | No | Yes | N/A | Yes (Sandhi) |
 | Stereochemistry | Fragile | Limited | Robust | Robust (CIP) |
-| Non-tetrahedral stereo | No | No | Partial | Yes (@SP, @OH, @AX, @TB, @PY) |
+| Non-tetrahedral stereo | No | No | Partial | Yes (@SP, @OH, @AX, @TB, @PY, @PL) |
 | Organometallics | Partial | No | No | Yes |
 | Alloys / non-stoichiometric | No | No | No | Yes |
 | Crystallography | No | No | Partial | Yes |
@@ -471,6 +480,17 @@ Grammar-level limitations (by design or scope):
 
 Resolved since the last major release: graft copolymer atomic expansion (now grammar-driven), polyatomic ion shorthand (now grammar-driven via `POLYATOMIC_FORMULA` terminal), allenic stereo, block copolymer connectivity, periodic topology (LQG-compliant canonical encoding of crystal nets, addressing an open problem identified in the SELFIES 2022 roadmap paper).
 
+
+---
+
+## Versioning
+
+The notation specification is SCRIPT V3. Codebase features tagged V4/V4.1-V4.6
+(LEAP71 lattice beams and thickness classes, explicit spline control points,
+3-centre-2-electron bridge bonds, graft copolymer expansion) ship from release
+4.0.0 onward; the `3.0.0` tag predates them. Feature tags in source comments
+(V3.x, V4.x) record when a construct entered the grammar, not separate
+installable products.
 
 ---
 

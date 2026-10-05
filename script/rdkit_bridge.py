@@ -209,7 +209,7 @@ def from_rdkit(rd_mol) -> CoreMolecule:
             isotope=atom.GetIsotope(),
             radical_electrons=atom.GetNumRadicalElectrons(),
             symbol=atom.GetSymbol(),
-            is_aromatic=atom.GetIsAromatic()
+            
         )
         core_atom.implicit_hs = atom.GetTotalNumHs()
         

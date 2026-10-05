@@ -38,6 +38,7 @@ TRANSITION_METAL_MAX_VALENCE = 12
 class GenerativeStateMachine:
     def __init__(self):
         self.mol = CoreMolecule()
+        self._parsed_aromatic_atoms = set()
         self.current_atom_idx: Optional[int] = None
         self.stack: List[int] = [] # Stack of atom indices for branching
         self.valence_used: Dict[int, int] = {} # idx -> used valence
@@ -68,7 +69,7 @@ class GenerativeStateMachine:
         atomic_num = 0 if is_wildcard else self._get_atomic_num(symbol)
         atom = CoreAtom(atomic_num=atomic_num, formal_charge=charge,
                         isotope=isotope, symbol=symbol,
-                        is_aromatic=is_aromatic, mapping=mapping,
+                        mapping=mapping,
                         occupancy=occupancy, spin=spin, is_excited=is_excited,
                         is_wildcard=is_wildcard,
                         beam_radius=beam_radius)
@@ -251,8 +252,8 @@ class GenerativeStateMachine:
         
         # Resolve implicit bond (-1)
         if order == -1:
-            u_arom = getattr(self.mol.atoms[u_idx], 'is_aromatic', False)
-            v_arom = getattr(self.mol.atoms[v_idx], 'is_aromatic', False)
+            u_arom = u_idx in self._parsed_aromatic_atoms
+            v_arom = v_idx in self._parsed_aromatic_atoms
             order = 4 if (u_arom and v_arom) else 1
             
         existing_bond = self.mol.get_bond(u_idx, v_idx)
@@ -442,7 +443,7 @@ class GenerativeStateMachine:
         bond = self.mol.get_bond(self.current_atom_idx, target_idx)
         if bond:
             bond.is_rc = True
-            bond.is_aromatic = is_resonant
+            # bond.is_aromatic = is_resonant
 
         # If resonant, walk back on the DFS path and mark atoms and intermediate bonds as aromatic
         if is_resonant:
@@ -451,13 +452,13 @@ class GenerativeStateMachine:
             # this aromatic ring.
             path = aromatic_path or [target_idx, self.current_atom_idx]
             for idx in path:
-                self.mol.atoms[idx].is_aromatic = True
+                # self.mol.atoms[idx].is_aromatic = True
 
             for u, v in zip(path, path[1:]):
                 b = self.mol.get_bond(u, v)
                 if b:
                     b.bond_type = 4
-                    b.is_aromatic = True
+                    # b.is_aromatic = True
 
     def _get_v2_ring_target(self, atom_idx: int, ring_size: int) -> Optional[int]:
         """Find the V2 ring closure target using parent chain walk.

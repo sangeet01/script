@@ -97,13 +97,17 @@ def perceive_chirality(mol, ranks: List[int], dfs_neighbor_orders: Optional[dict
         nbr_points = []
         for n_idx in nbr_indices:
             if n_idx == -1:
-                # Implicit H: place opposite to centroid of other neighbors
-                avg_x = sum(mol.atoms[j].coords[0] for j in nbr_indices if j != -1) / 3
-                avg_y = sum(mol.atoms[j].coords[1] for j in nbr_indices if j != -1) / 3
-                avg_z = sum(mol.atoms[j].coords[2] for j in nbr_indices if j != -1) / 3
-                nbr_points.append((2*atom.coords[0]-avg_x,
-                                   2*atom.coords[1]-avg_y,
-                                   2*atom.coords[2]-avg_z))
+                # Implicit H: place at the mirror of the centroid of real neighbors
+                real_nbrs = [j for j in nbr_indices if j != -1]
+                n_real = len(real_nbrs)
+                if n_real == 0:
+                    break  # degenerate -- skip this atom
+                avg_x = sum(mol.atoms[j].coords[0] for j in real_nbrs) / n_real
+                avg_y = sum(mol.atoms[j].coords[1] for j in real_nbrs) / n_real
+                avg_z = sum(mol.atoms[j].coords[2] for j in real_nbrs) / n_real
+                nbr_points.append((2 * atom.coords[0] - avg_x,
+                                   2 * atom.coords[1] - avg_y,
+                                   2 * atom.coords[2] - avg_z))
             else:
                 coords = mol.atoms[n_idx].coords
                 if coords is None:

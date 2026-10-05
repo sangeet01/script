@@ -60,7 +60,7 @@ ATOMIC_NUM_TO_SYMBOL = {
 class CoreAtom:
     def __init__(self, atomic_num: int, formal_charge: int = 0, 
                  isotope: int = 0, radical_electrons: int = 0,
-                 symbol: str = "", is_aromatic: bool = False,
+                 symbol: str = "",
                  mapping: int = 0, occupancy: float = 1.0,
                  spin: int = 0, is_excited: bool = False,
                  is_wildcard: bool = False,
@@ -70,7 +70,12 @@ class CoreAtom:
         self.isotope = isotope
         self.radical_electrons = radical_electrons
         self.symbol = symbol
-        self.is_aromatic = is_aromatic
+        # DEPRECATED: redundant with bond_type == BondType.AROMATIC on adjacent bonds.
+        # The rdkit_bridge sets this via atom.GetIsAromatic(); the parser does not.
+        # This divergence between the two construction paths is a root cause of the
+        # 5.9% canonical idempotency gap. Do not add new reads of this flag;
+        # derive aromaticity from bond_type instead. Scheduled for removal.
+        
         self.mapping = mapping
         self.occupancy = occupancy
         self.spin = spin
@@ -121,9 +126,18 @@ class CoreBond:
         self.bond_type: BondType = bond_type
         self.bond_dir = bond_dir      # 0: None, 3: Up(/), 4: Down(\)
         self.hapticity = hapticity    # eta-n for haptic organometallics
+        # bond_class: transitional string tag used by state_machine.py during
+        # parsing to select the BondType enum value. state_machine._add_bond()
+        # maps bond_class -> bond_type immediately, so bond_type is always the
+        # authoritative representation. bond_class is retained only for the
+        # peptide.py copy-and-rebuild path. Do not read bond_class for
+        # canonicalization decisions -- read bond_type instead.
         self.bond_class = bond_class  # "dative","rev_dative","coordinate","star","spline",""
         self.is_rc = False            # ring closure bond
-        self.is_aromatic = False      # part of aromatic/resonant system
+        # DEPRECATED: redundant with bond_type == BondType.AROMATIC.
+        # Set by state_machine.py after ring perception, but the canonicalizer
+        # reads bond_type directly and ignores this flag. Scheduled for removal.
+        
         # Periodic topology: integer lattice translation vector (tx, ty, tz).
         # (0,0,0) for all intracell bonds; non-zero for bonds that cross unit-cell
         # boundaries in MOF/zeolite frameworks.  Ignored for non-periodic molecules.
@@ -330,7 +344,7 @@ NUCLEOTIDE_BASES = {
     "G": ("guanine",   False, "n1cnc2c(=O)[nH]c(N)nc2n1"),
     "C": ("cytosine",  False, "n1ccc(N)nc1=O"),
     "T": ("thymine",   True,  "n1cc(C)c(=O)[nH]c1=O"),
-    "U": ("uracil",    False, "n1cccc(=O)[nH]1=O"),
+    "U": ("uracil",    False, "n1ccc(=O)[nH]c1=O"),
     "I": ("inosine",   False, "n1cnc2c(=O)[nH]cnc12"),
     "dA": ("deoxyadenosine", True,  "n1cnc2ncnc(N)c12"),
     "dG": ("deoxyguanosine", True,  "n1cnc2c(=O)[nH]c(N)nc2n1"),
@@ -339,7 +353,7 @@ NUCLEOTIDE_BASES = {
     "rA": ("adenosine",      False, "n1cnc2ncnc(N)c12"),
     "rG": ("guanosine",      False, "n1cnc2c(=O)[nH]c(N)nc2n1"),
     "rC": ("cytidine",       False, "n1ccc(N)nc1=O"),
-    "rU": ("uridine",        False, "n1cccc(=O)[nH]1=O"),
+    "rU": ("uridine",        False, "n1ccc(=O)[nH]c1=O"),
 }
 
 
@@ -462,8 +476,8 @@ POLYATOMIC_IONS: Dict[str, Dict[str, str]] = {
     'C2H3O2': {
         '-': 'CC(=O)[O-]',                       # acetate (IUPAC formula)
     },
-    'AcO': {
-        '-': 'CC(=O)[O-]',                       # acetate (shorthand AcO-)
+    'ACO': {
+        '-': 'CC(=O)[O-]',                       # acetate (shorthand AcO-, canonical key)
     },
     'HCOO': {
         '-': '[C](=O)[O-]',                      # formate (HCOO-)

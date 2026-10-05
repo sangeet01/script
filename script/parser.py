@@ -1129,7 +1129,7 @@ class SCRIPTInterpreter(Interpreter):
                 isotope=atom.isotope,
                 radical_electrons=atom.radical_electrons,
                 symbol=atom.symbol,
-                is_aromatic=atom.is_aromatic,
+                
                 mapping=atom.mapping,
                 occupancy=atom.occupancy,
                 spin=atom.spin,
@@ -1160,7 +1160,7 @@ class SCRIPTInterpreter(Interpreter):
                 # Copy over additional properties that add_atom doesn't set
                 idx = len(self.state.mol.atoms) - 1
                 self.state.mol.atoms[idx].radical_electrons = new_atom.radical_electrons
-                self.state.mol.atoms[idx].is_aromatic = new_atom.is_aromatic
+                
             else:
                 # Subsequent atoms: no implicit bond (they're connected via explicit bonds below)
                 self.state.mol.add_atom(new_atom)
