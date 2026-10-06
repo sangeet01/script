@@ -38,7 +38,6 @@ TRANSITION_METAL_MAX_VALENCE = 12
 class GenerativeStateMachine:
     def __init__(self):
         self.mol = CoreMolecule()
-        self._parsed_aromatic_atoms = set()
         self.current_atom_idx: Optional[int] = None
         self.stack: List[int] = [] # Stack of atom indices for branching
         self.valence_used: Dict[int, int] = {} # idx -> used valence
@@ -57,7 +56,7 @@ class GenerativeStateMachine:
     def add_atom(self, symbol: str, charge: int = 0, isotope: int = 0, 
                  hcount: Optional[int] = None, chiral: Optional[str] = None,
                  bond_order: int = 1, bond_dir: int = 0,
-                 is_bracket: bool = False, is_aromatic: bool = False,
+                 is_bracket: bool = False,
                  mapping: int = 0, occupancy: float = 1.0, 
                  spin: int = 0, is_excited: bool = False,
                  bond_class: str = "", radical: int = 0,
@@ -252,8 +251,11 @@ class GenerativeStateMachine:
         
         # Resolve implicit bond (-1)
         if order == -1:
-            u_arom = u_idx in self._parsed_aromatic_atoms
-            v_arom = v_idx in self._parsed_aromatic_atoms
+            # Lowercase aromatic atoms are not in the grammar (ORGANIC_ATOM is
+            # uppercase-only). Implicit bonds between two adjacent unbracketed
+            # atoms are always SINGLE; aromatic perception is topological.
+            u_arom = False
+            v_arom = False
             order = 4 if (u_arom and v_arom) else 1
             
         existing_bond = self.mol.get_bond(u_idx, v_idx)
@@ -443,7 +445,6 @@ class GenerativeStateMachine:
         bond = self.mol.get_bond(self.current_atom_idx, target_idx)
         if bond:
             bond.is_rc = True
-            # bond.is_aromatic = is_resonant
 
         # If resonant, walk back on the DFS path and mark atoms and intermediate bonds as aromatic
         if is_resonant:
@@ -451,14 +452,13 @@ class GenerativeStateMachine:
             # The emitted atom interval may contain branches that are not in
             # this aromatic ring.
             path = aromatic_path or [target_idx, self.current_atom_idx]
-            for idx in path:
-                # self.mol.atoms[idx].is_aromatic = True
-
+            # Mark all bonds in the aromatic ring with BondType.AROMATIC (= 4).
+            # Atom-level is_aromatic flags have been removed; bond_type is the
+            # single source of truth for aromaticity.
             for u, v in zip(path, path[1:]):
                 b = self.mol.get_bond(u, v)
                 if b:
                     b.bond_type = 4
-                    # b.is_aromatic = True
 
     def _get_v2_ring_target(self, atom_idx: int, ring_size: int) -> Optional[int]:
         """Find the V2 ring closure target using parent chain walk.
