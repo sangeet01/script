@@ -58,6 +58,11 @@ ATOMIC_NUM_TO_SYMBOL = {
 
 
 class CoreAtom:
+    # Class-level default so attribute reads are safe even if
+    # construction bypasses __init__ (e.g. unpickling, mocking).
+    # Aromaticity is authoritative on bond_type == BondType.AROMATIC.
+    is_aromatic: bool = False
+
     def __init__(self, atomic_num: int, formal_charge: int = 0, 
                  isotope: int = 0, radical_electrons: int = 0,
                  symbol: str = "",
@@ -70,12 +75,6 @@ class CoreAtom:
         self.isotope = isotope
         self.radical_electrons = radical_electrons
         self.symbol = symbol
-        # DEPRECATED: redundant with bond_type == BondType.AROMATIC on adjacent bonds.
-        # The rdkit_bridge sets this via atom.GetIsAromatic(); the parser does not.
-        # This divergence between the two construction paths is a root cause of the
-        # 5.9% canonical idempotency gap. Do not add new reads of this flag;
-        # derive aromaticity from bond_type instead. Scheduled for removal.
-        
         self.mapping = mapping
         self.occupancy = occupancy
         self.spin = spin
@@ -110,6 +109,9 @@ class CoreAtom:
         self.query_primitives: List[dict] = []   # raw primitives for complex queries
 
 class CoreBond:
+    # Class-level default; bond_type == BondType.AROMATIC is authoritative.
+    is_aromatic: bool = False
+
     def __init__(self, begin_atom_idx: int, end_atom_idx: int,
                  bond_type: Any, bond_dir: int = 0,
                  hapticity: int = 0, bond_class: str = "",
@@ -134,10 +136,6 @@ class CoreBond:
         # canonicalization decisions -- read bond_type instead.
         self.bond_class = bond_class  # "dative","rev_dative","coordinate","star","spline",""
         self.is_rc = False            # ring closure bond
-        # DEPRECATED: redundant with bond_type == BondType.AROMATIC.
-        # Set by state_machine.py after ring perception, but the canonicalizer
-        # reads bond_type directly and ignores this flag. Scheduled for removal.
-        
         # Periodic topology: integer lattice translation vector (tx, ty, tz).
         # (0,0,0) for all intracell bonds; non-zero for bonds that cross unit-cell
         # boundaries in MOF/zeolite frameworks.  Ignored for non-periodic molecules.
